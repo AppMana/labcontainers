@@ -1,0 +1,6 @@
+Labcontainers
+Copyright 2026 AppMana
+
+Labcontainers interoperates with Containerlab, which is licensed under the
+BSD 3-Clause License. Containerlab is invoked as a separate executable and is
+not copied into this source tree.

@@ -1,0 +1,13 @@
+name: basic
+topology:
+  defaults:
+    kind: linux
+    image: alpine:3.20
+    network-mode: none
+  nodes:
+    client:
+      exec: ["ip addr add 192.0.2.1/24 dev eth0"]
+    server:
+      exec: ["ip addr add 192.0.2.2/24 dev eth0"]
+  links:
+    - endpoints: ["client:eth0", "server:eth0"]

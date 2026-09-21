@@ -1,0 +1,22 @@
+{
+  "name": "@appmana/labcontainers",
+  "version": "0.1.0-alpha.1",
+  "description": "Testcontainers-style isolated network and VM test labs",
+  "license": "Apache-2.0",
+  "main": "javascript/index.js",
+  "types": "javascript/index.d.ts",
+  "files": [
+    "javascript/",
+    "api/v1/labcontainers.proto",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.0",
+    "@grpc/proto-loader": "^0.8.0"
+  }
+}

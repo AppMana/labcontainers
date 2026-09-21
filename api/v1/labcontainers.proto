@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package labcontainers.v1;
+
+option go_package = "github.com/appmana/labcontainers/api/v1;labcontainersv1";
+
+service Labcontainers {
+  rpc CreateSession(CreateSessionRequest) returns (Session);
+  rpc GetSession(SessionRef) returns (Session);
+  rpc DestroySession(DestroySessionRequest) returns (Empty);
+  rpc KeepSession(KeepSessionRequest) returns (Session);
+  rpc Exec(ExecRequest) returns (ExecResponse);
+  rpc Put(PutRequest) returns (Empty);
+  rpc Lifecycle(LifecycleRequest) returns (Node);
+  rpc ApplyFault(ApplyFaultRequest) returns (Fault);
+  rpc RevertFault(FaultRef) returns (Empty);
+  rpc RunTimeline(RunTimelineRequest) returns (TimelineResult);
+}
+
+message Empty {}
+
+message TopologySource {
+  oneof source {
+    string path = 1;
+    bytes yaml = 2;
+  }
+}
+
+message NodeExtension {
+  string control = 1;
+  BootstrapData bootstrap = 2;
+  repeated Disk disks = 3;
+}
+
+message BootstrapData {
+  string format = 1;
+  bytes value = 2;
+}
+
+message Disk {
+  string name = 1;
+  uint64 size_bytes = 2;
+  string filesystem = 3;
+  string mount_point = 4;
+}
+
+message LabSpec {
+  TopologySource topology = 1;
+  map<string, NodeExtension> nodes = 2;
+  bool allow_external_access = 3;
+  string artifact_directory = 4;
+  // name requests a stable Containerlab name for harnesses that must reconnect
+  // across processes. Empty uses a collision-resistant per-session name.
+  string name = 5;
+}
+
+message CreateSessionRequest {
+  LabSpec spec = 1;
+  int64 ttl_seconds = 2;
+  map<string, string> labels = 3;
+}
+
+message SessionRef { string id = 1; }
+
+message Session {
+  string id = 1;
+  string name = 2;
+  string state = 3;
+  string topology_path = 4;
+  string artifact_directory = 5;
+  int64 expires_unix = 6;
+  string resume_token = 7;
+  repeated Node nodes = 8;
+}
+
+message DestroySessionRequest {
+  string id = 1;
+  string resume_token = 2;
+}
+
+message KeepSessionRequest {
+  string id = 1;
+  int64 ttl_seconds = 2;
+}
+
+message NodeRef {
+  string session_id = 1;
+  string node = 2;
+}
+
+message Node {
+  string name = 1;
+  string state = 2;
+}
+
+message ExecRequest {
+  NodeRef node = 1;
+  repeated string argv = 2;
+  bytes stdin = 3;
+  int64 timeout_millis = 4;
+}
+
+message ExecResponse {
+  bytes stdout = 1;
+  bytes stderr = 2;
+  int32 exit_code = 3;
+}
+
+message PutRequest {
+  NodeRef node = 1;
+  string path = 2;
+  uint32 mode = 3;
+  bytes content = 4;
+}
+
+enum LifecycleAction {
+  LIFECYCLE_ACTION_UNSPECIFIED = 0;
+  POWER_OFF = 1;
+  START = 2;
+  RESTART = 3;
+  REPLACE = 4;
+}
+
+message LifecycleRequest {
+  NodeRef node = 1;
+  LifecycleAction action = 2;
+  BootstrapData bootstrap = 3;
+}
+
+message Netem {
+  int64 delay_millis = 1;
+  int64 jitter_millis = 2;
+  double loss_percent = 3;
+  uint64 rate_kbit = 4;
+  double corruption_percent = 5;
+}
+
+message Partition {
+  repeated string left = 1;
+  repeated string right = 2;
+  bool directed = 3;
+}
+
+message LinkState {
+  string node = 1;
+  string interface = 2;
+  bool up = 3;
+}
+
+message ApplyFaultRequest {
+  string session_id = 1;
+  oneof fault {
+    Netem netem = 2;
+    Partition partition = 3;
+    LinkState link_state = 4;
+  }
+  string node = 5;
+  string interface = 6;
+}
+
+message FaultRef {
+  string session_id = 1;
+  string id = 2;
+}
+
+message Fault {
+  string id = 1;
+  string kind = 2;
+  bool active = 3;
+}
+
+message TimelineAction {
+  int64 at_millis = 1;
+  oneof action {
+    LifecycleRequest lifecycle = 2;
+    ApplyFaultRequest apply_fault = 3;
+    FaultRef revert_fault = 4;
+    ExecRequest exec = 5;
+  }
+}
+
+message RunTimelineRequest {
+  string session_id = 1;
+  repeated TimelineAction actions = 2;
+}
+
+message TimelineResult {
+  int32 completed = 1;
+  repeated string fault_ids = 2;
+}
