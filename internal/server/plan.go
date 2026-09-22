@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
+	"github.com/appmana/labcontainers/internal/session"
 	"github.com/appmana/labcontainers/pkg/spec"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -22,34 +23,7 @@ func (s *Server) PlanTopology(ctx context.Context, req *labv1.PlanTopologyReques
 	}
 	path := r.TopologyPath
 	if req.GetTopology() != nil {
-		raw, base, err := topologyBytes(req.GetTopology())
-		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-		prepared, err := spec.PrepareWithOptions(raw, r.Name, r.ID, r.AllowExternalAccess, spec.PrepareOptions{BaseDir: base})
-		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-		// Preserve existing SDK-managed disk/bootstrap attachments on surviving
-		// nodes. Removal of a node must not fail because its old binds exist.
-		binds := map[string][]string{}
-		for _, name := range prepared.Nodes {
-			n := r.Nodes[name]
-			if n == nil {
-				continue
-			}
-			for _, disk := range n.Disks {
-				binds[name] = append(binds[name], disk.Path+":/labcontainers-disks/"+disk.Name+".raw")
-			}
-			if n.BootstrapPath != "" {
-				target, err := bootstrapTarget(n.BootstrapFormat)
-				if err != nil {
-					return nil, status.Error(codes.Internal, err.Error())
-				}
-				binds[name] = append(binds[name], n.BootstrapPath+":"+target+":ro")
-			}
-		}
-		prepared, err = spec.PrepareWithOptions(raw, r.Name, r.ID, r.AllowExternalAccess, spec.PrepareOptions{BaseDir: base, NodeBinds: binds})
+		prepared, err := prepareDraft(r, req.GetTopology())
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
@@ -75,4 +49,35 @@ func (s *Server) PlanTopology(ctx context.Context, req *labv1.PlanTopologyReques
 		return nil, status.Errorf(codes.FailedPrecondition, "Containerlab plan: %v", err)
 	}
 	return &labv1.NativeApplyResult{Json: result}, nil
+}
+
+func prepareDraft(r *session.Record, source *labv1.TopologySource) (*spec.Prepared, error) {
+	raw, base, err := topologyBytes(source)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := spec.PrepareWithOptions(raw, r.Name, r.ID, r.AllowExternalAccess, spec.PrepareOptions{BaseDir: base})
+	if err != nil {
+		return nil, err
+	}
+	// Existing attachments survive on retained nodes; removed nodes do not
+	// leak extension binds into the proposed topology.
+	binds := map[string][]string{}
+	for _, name := range prepared.Nodes {
+		n := r.Nodes[name]
+		if n == nil {
+			continue
+		}
+		for _, disk := range n.Disks {
+			binds[name] = append(binds[name], disk.Path+":/labcontainers-disks/"+disk.Name+".raw")
+		}
+		if n.BootstrapPath != "" {
+			target, err := bootstrapTarget(n.BootstrapFormat)
+			if err != nil {
+				return nil, err
+			}
+			binds[name] = append(binds[name], n.BootstrapPath+":"+target+":ro")
+		}
+	}
+	return spec.PrepareWithOptions(raw, r.Name, r.ID, r.AllowExternalAccess, spec.PrepareOptions{BaseDir: base, NodeBinds: binds})
 }

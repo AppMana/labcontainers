@@ -44,6 +44,19 @@ func TestLabNamePreflightRejectsAnyExistingContainer(t *testing.T) {
 	}
 }
 
+func TestReconciliationRejectsForeignRuntimeOwnership(t *testing.T) {
+	for _, output := range []string{"container\n", "container other-session\n", "mine session\nforeign other\n"} {
+		c := &Containerlab{Runner: identityRunner{output}}
+		if err := c.CheckSessionOwnership(context.Background(), "lab", "session"); err == nil {
+			t.Fatalf("accepted foreign runtime ownership: %q", output)
+		}
+	}
+	c := &Containerlab{Runner: identityRunner{"container session\n"}}
+	if err := c.CheckSessionOwnership(context.Background(), "lab", "session"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVMFaultTargetsNativeEndpointNotGuestDevice(t *testing.T) {
 	f := &fakeRunner{}
 	c := &Containerlab{Runner: f}

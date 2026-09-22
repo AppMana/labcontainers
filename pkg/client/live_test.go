@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,9 +88,12 @@ func TestLive(t *testing.T) {
 		Nodes: map[string]*types.NodeDefinition{
 			"client": {Exec: []string{"ip addr add 192.0.2.1/24 dev eth0"}},
 			"server": {Exec: []string{"ip addr add 192.0.2.2/24 dev eth0"}},
-			"adhoc":  {},
+			"adhoc":  {Exec: []string{"ip addr add 192.0.3.2/24 dev eth1"}},
 		},
-		Links: []*links.LinkDefinition{{Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth0", "server:eth0"}}}},
+		Links: []*links.LinkDefinition{
+			{Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth0", "server:eth0"}}},
+			{Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth1", "adhoc:eth1"}}},
+		},
 	}}
 	draft, err := clab.Source(draftConfig)
 	if err != nil {
@@ -116,6 +121,55 @@ func TestLive(t *testing.T) {
 	unchanged, err := lab.Plan(ctx, nil)
 	if err != nil || len(unchanged.AddedNodes) != 0 {
 		t.Fatalf("draft changed authoritative topology: result=%+v error=%v", unchanged, err)
+	}
+	if os.Getenv("LABCONTAINERS_RECONCILE_LIVE") != "" {
+		identity := func() string {
+			t.Helper()
+			out, err := exec.CommandContext(ctx, "docker", "ps", "--no-trunc", "--filter", "label=labcontainers.appmana.com/session="+lab.ID(), "--filter", "label=clab-node-name=client", "--format", "{{.ID}}").Output()
+			if err != nil || strings.TrimSpace(string(out)) == "" {
+				t.Fatalf("client runtime identity: %s %v", out, err)
+			}
+			state, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.Id}} {{.State.StartedAt}}", strings.TrimSpace(string(out))).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(state)
+		}
+		before := identity()
+		if err := lab.Apply(ctx, draft, plan, nil); err != nil {
+			t.Fatal(err)
+		}
+		if identity() != before {
+			t.Fatal("adding an ad hoc node replaced an unrelated container")
+		}
+		added, err := lab.Node("adhoc").Exec(ctx, "true")
+		if err != nil || added.GetExitCode() != 0 {
+			t.Fatalf("added node not executable: %v %v", added, err)
+		}
+		configured, err := lab.Node("client").Exec(ctx, "ip", "addr", "add", "192.0.3.1/24", "dev", "eth1")
+		if err != nil || configured.GetExitCode() != 0 {
+			t.Fatalf("new link configuration failed: %v %v", configured, err)
+		}
+		probe, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "2", "192.0.3.2")
+		if err != nil || probe.GetExitCode() != 0 {
+			t.Fatalf("new declared link has no reachability: %v %v", probe, err)
+		}
+		remove, err := lab.Plan(ctx, topology)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(remove.DeletedNodes) != 1 || remove.DeletedNodes[0] != "adhoc" || len(remove.RecreatedNodes)+len(remove.RestartedNodes) != 0 {
+			t.Fatalf("unexpected removal impact: %+v", remove)
+		}
+		if err := lab.Apply(ctx, topology, remove, nil); err != nil {
+			t.Fatal(err)
+		}
+		if identity() != before {
+			t.Fatal("removing an ad hoc node replaced an unrelated container")
+		}
+		if _, err := lab.Node("adhoc").Exec(ctx, "true"); err == nil {
+			t.Fatal("removed node still exposed")
+		}
 	}
 	result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 	if err != nil {

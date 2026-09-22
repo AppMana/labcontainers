@@ -7,8 +7,9 @@ Attached disks persist. `PowerOff()` retains Containerlab stop semantics.
 
 Current lifecycle reconciliation can recreate a VM container and its root disk
 after start/restart; only explicitly attached persistent disks are covered by
-the persistence guarantee. Native reconciliation impact reporting and scoped
-live topology updates remain unfinished. Do not treat a successful `Start` as
+the persistence guarantee. Explicit `Plan`/`Apply` topology updates report and
+recheck native impact, but legacy `Start`/`Restart` have not yet been migrated to
+that approval flow. Do not treat a successful `Start` as
 proof that container identity or root-disk contents were preserved.
 
 VM teardown can recreate Containerlab veth links. Labcontainers journals Linux
@@ -161,7 +162,24 @@ the same native JSON keys as a dictionary; `lab.plan()` inspects current drift.
 The raw transport retains the unmodified native JSON, including new upstream
 fields. Plans do not apply changes, reserve runtime state, or authorize a later
 restart automatically. Drafts retain the session's isolation policy and existing
-SDK-managed disk/bootstrap binds. Live topology application remains unfinished.
+SDK-managed disk/bootstrap binds.
+
+After inspecting/asserting the permitted impact, apply that exact native plan:
+`lab.Apply(ctx, proposedSource, approvedPlan, nodeExtensions)` in Go or
+`lab.apply(source(config), approved_plan, nodes=extensions)` in Python. The
+server replans before deployment and rejects changed impact. The optional
+extensions select serial `qga` control for newly added VMs; native Containerlab
+objects still define their images, links, binds, environment, and lifecycle
+behavior. Existing SDK-managed disk/bootstrap attachments are preserved, but
+dynamic changes to those extensions are explicitly unsupported so far.
+
+Topology application refuses foreign session containers and active faults,
+checks isolation after convergence, and retains before/desired topologies and
+the approved native plan as evidence. Native apply is not transactional: a
+failure can leave partial changes. The session then reports `reconcile-failed`
+and remains inspectable, retryable with a freshly reviewed plan, or destroyable.
+These checks serialize operations within this daemon; they cannot reserve the
+runtime against independent Docker/Containerlab changes by other processes.
 
 Known native v0.79 limitation: interface ownership discovery excludes `eth0`
 unconditionally, even if it is a declared data link on a node with no management
@@ -189,7 +207,10 @@ selects an explicit CLI for the child daemon; ordinary launches still use the
 host `containerlab`. The strict live no-op check fails on stock v0.79.0 and passes
 with the correction. No management NIC is added, and no interface is renamed.
 This is a narrow patched dependency, not a replacement topology or VM API;
-upstreaming it and qualifying live application remain outstanding.
+upstreaming it remains outstanding. Go/Python live application tests qualify
+container addition/removal; Go additionally verifies a new data link carries
+traffic and unrelated containers retain both identity and start time. General
+VM topology-change and storage-fixture qualification remain outstanding.
 
 ## Python
 

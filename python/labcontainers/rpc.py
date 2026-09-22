@@ -9,6 +9,7 @@ class LabcontainersStub:
         self.CreateSession = channel.unary_unary(service + "CreateSession", request_serializer=pb.CreateSessionRequest.SerializeToString, response_deserializer=pb.Session.FromString)
         self.GetSession = channel.unary_unary(service + "GetSession", request_serializer=pb.SessionRef.SerializeToString, response_deserializer=pb.Session.FromString)
         self.PlanTopology = channel.unary_unary(service + "PlanTopology", request_serializer=pb.PlanTopologyRequest.SerializeToString, response_deserializer=pb.NativeApplyResult.FromString)
+        self.ApplyTopology = channel.unary_unary(service + "ApplyTopology", request_serializer=pb.ApplyTopologyRequest.SerializeToString, response_deserializer=pb.Session.FromString)
         self.DestroySession = channel.unary_unary(service + "DestroySession", request_serializer=pb.DestroySessionRequest.SerializeToString, response_deserializer=pb.Empty.FromString)
         self.KeepSession = channel.unary_unary(service + "KeepSession", request_serializer=pb.KeepSessionRequest.SerializeToString, response_deserializer=pb.Session.FromString)
         self.Exec = channel.unary_unary(service + "Exec", request_serializer=pb.ExecRequest.SerializeToString, response_deserializer=pb.ExecResponse.FromString)

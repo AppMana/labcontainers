@@ -31,6 +31,7 @@ var diskNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 var labNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
 type Backend interface {
+	CheckSessionOwnership(context.Context, string, string) error
 	CheckLabNameAvailable(context.Context, string) error
 	Doctor(context.Context) error
 	Validate(context.Context, string) error

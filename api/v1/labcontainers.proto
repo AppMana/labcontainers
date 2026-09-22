@@ -10,6 +10,7 @@ service Labcontainers {
   rpc DestroySession(DestroySessionRequest) returns (Empty);
   rpc KeepSession(KeepSessionRequest) returns (Session);
   rpc PlanTopology(PlanTopologyRequest) returns (NativeApplyResult);
+  rpc ApplyTopology(ApplyTopologyRequest) returns (Session);
   rpc Exec(ExecRequest) returns (ExecResponse);
   rpc Put(PutRequest) returns (Empty);
   rpc Lifecycle(LifecycleRequest) returns (Node);
@@ -29,6 +30,15 @@ message PlanTopologyRequest {
 
 // Containerlab core.ApplyResult JSON, without a parallel Labcontainers model.
 message NativeApplyResult { bytes json = 1; }
+
+message ApplyTopologyRequest {
+  string session_id = 1;
+  TopologySource topology = 2;
+  // Required native dry-run result explicitly approved by the caller.
+  NativeApplyResult approved_plan = 3;
+  // Control channels for newly added nodes; existing node extensions persist.
+  map<string, NodeExtension> nodes = 4;
+}
 
 message TopologySource {
   oneof source {

@@ -29,6 +29,9 @@ type fakeBackend struct {
 func (f *fakeBackend) CheckLabNameAvailable(context.Context, string) error {
 	return f.nameConflict
 }
+func (f *fakeBackend) CheckSessionOwnership(context.Context, string, string) error {
+	return f.nameConflict
+}
 
 func (f *fakeBackend) call(value string)                          { f.calls = append(f.calls, value) }
 func (f *fakeBackend) Doctor(context.Context) error               { f.call("doctor"); return nil }

@@ -24,6 +24,7 @@ const (
 	Labcontainers_DestroySession_FullMethodName = "/labcontainers.v1.Labcontainers/DestroySession"
 	Labcontainers_KeepSession_FullMethodName    = "/labcontainers.v1.Labcontainers/KeepSession"
 	Labcontainers_PlanTopology_FullMethodName   = "/labcontainers.v1.Labcontainers/PlanTopology"
+	Labcontainers_ApplyTopology_FullMethodName  = "/labcontainers.v1.Labcontainers/ApplyTopology"
 	Labcontainers_Exec_FullMethodName           = "/labcontainers.v1.Labcontainers/Exec"
 	Labcontainers_Put_FullMethodName            = "/labcontainers.v1.Labcontainers/Put"
 	Labcontainers_Lifecycle_FullMethodName      = "/labcontainers.v1.Labcontainers/Lifecycle"
@@ -41,6 +42,7 @@ type LabcontainersClient interface {
 	DestroySession(ctx context.Context, in *DestroySessionRequest, opts ...grpc.CallOption) (*Empty, error)
 	KeepSession(ctx context.Context, in *KeepSessionRequest, opts ...grpc.CallOption) (*Session, error)
 	PlanTopology(ctx context.Context, in *PlanTopologyRequest, opts ...grpc.CallOption) (*NativeApplyResult, error)
+	ApplyTopology(ctx context.Context, in *ApplyTopologyRequest, opts ...grpc.CallOption) (*Session, error)
 	Exec(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (*ExecResponse, error)
 	Put(ctx context.Context, in *PutRequest, opts ...grpc.CallOption) (*Empty, error)
 	Lifecycle(ctx context.Context, in *LifecycleRequest, opts ...grpc.CallOption) (*Node, error)
@@ -101,6 +103,16 @@ func (c *labcontainersClient) PlanTopology(ctx context.Context, in *PlanTopology
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NativeApplyResult)
 	err := c.cc.Invoke(ctx, Labcontainers_PlanTopology_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labcontainersClient) ApplyTopology(ctx context.Context, in *ApplyTopologyRequest, opts ...grpc.CallOption) (*Session, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Session)
+	err := c.cc.Invoke(ctx, Labcontainers_ApplyTopology_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +188,7 @@ type LabcontainersServer interface {
 	DestroySession(context.Context, *DestroySessionRequest) (*Empty, error)
 	KeepSession(context.Context, *KeepSessionRequest) (*Session, error)
 	PlanTopology(context.Context, *PlanTopologyRequest) (*NativeApplyResult, error)
+	ApplyTopology(context.Context, *ApplyTopologyRequest) (*Session, error)
 	Exec(context.Context, *ExecRequest) (*ExecResponse, error)
 	Put(context.Context, *PutRequest) (*Empty, error)
 	Lifecycle(context.Context, *LifecycleRequest) (*Node, error)
@@ -206,6 +219,9 @@ func (UnimplementedLabcontainersServer) KeepSession(context.Context, *KeepSessio
 }
 func (UnimplementedLabcontainersServer) PlanTopology(context.Context, *PlanTopologyRequest) (*NativeApplyResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PlanTopology not implemented")
+}
+func (UnimplementedLabcontainersServer) ApplyTopology(context.Context, *ApplyTopologyRequest) (*Session, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApplyTopology not implemented")
 }
 func (UnimplementedLabcontainersServer) Exec(context.Context, *ExecRequest) (*ExecResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Exec not implemented")
@@ -332,6 +348,24 @@ func _Labcontainers_PlanTopology_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LabcontainersServer).PlanTopology(ctx, req.(*PlanTopologyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Labcontainers_ApplyTopology_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyTopologyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabcontainersServer).ApplyTopology(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Labcontainers_ApplyTopology_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabcontainersServer).ApplyTopology(ctx, req.(*ApplyTopologyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -470,6 +504,10 @@ var Labcontainers_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PlanTopology",
 			Handler:    _Labcontainers_PlanTopology_Handler,
+		},
+		{
+			MethodName: "ApplyTopology",
+			Handler:    _Labcontainers_ApplyTopology_Handler,
 		},
 		{
 			MethodName: "Exec",

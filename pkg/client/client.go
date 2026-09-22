@@ -201,6 +201,25 @@ func (s *Session) Plan(ctx context.Context, source *labv1.TopologySource) (*core
 	return &result, nil
 }
 
+// Apply reconciles a full native topology after rechecking the approved native
+// plan. Native failures can leave partial changes; inspect, retry, or destroy.
+func (s *Session) Apply(ctx context.Context, source *labv1.TopologySource, approved *core.ApplyResult, nodes map[string]*labv1.NodeExtension) error {
+	if approved == nil {
+		return fmt.Errorf("an approved native plan is required")
+	}
+	raw, err := json.Marshal(approved)
+	if err != nil {
+		return err
+	}
+	value, err := s.client.rpc.ApplyTopology(ctx, &labv1.ApplyTopologyRequest{
+		SessionId: s.ID(), Topology: source, ApprovedPlan: &labv1.NativeApplyResult{Json: raw}, Nodes: nodes,
+	})
+	if err == nil {
+		s.value = value
+	}
+	return err
+}
+
 func (s *Session) Keep(ctx context.Context, ttl time.Duration) error {
 	p, err := s.client.rpc.KeepSession(ctx, &labv1.KeepSessionRequest{Id: s.ID(), TtlSeconds: int64(ttl / time.Second)})
 	if err != nil {
