@@ -268,9 +268,7 @@ func TestLiveVM(t *testing.T) {
 	if err := node.PowerOff(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := node.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+	recoverVM(t, ctx, lab, "vm")
 	result := waitExec("mkdir -p /mnt/volume; mount /dev/disk/by-id/virtio-lc-volume /mnt/volume; cat /mnt/volume/marker")
 	if got := string(result.GetStdout()); got != "durable" {
 		t.Fatalf("marker after abrupt power cycle = %q", got)

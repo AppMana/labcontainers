@@ -33,6 +33,7 @@ message NativeApplyResult { bytes json = 1; }
 
 message ApplyTopologyRequest {
   string session_id = 1;
+  // Omit to reconcile runtime drift against the current desired topology.
   TopologySource topology = 2;
   // Required native dry-run result explicitly approved by the caller.
   NativeApplyResult approved_plan = 3;

@@ -148,9 +148,7 @@ func TestLiveVMCrashRestoresRuntimeBridgeMembership(t *testing.T) {
 	if err := vm.Crash(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := vm.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+	recoverVM(t, ctx, lab, "vm")
 	waitVM()
-	waitPing("after crash and start without caller-side network repair")
+	waitPing("after explicitly approved crash recovery without caller-side network repair")
 }

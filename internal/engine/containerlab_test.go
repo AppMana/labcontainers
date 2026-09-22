@@ -67,15 +67,26 @@ func TestReplaceUsesFilteredDestroyThenConvergence(t *testing.T) {
 	}
 }
 
-func TestStartConvergesAfterGenericVMWasAutoRemoved(t *testing.T) {
+func TestStartDoesNotSilentlyReconcileOtherNodes(t *testing.T) {
 	f := &fakeRunner{}
 	c := &Containerlab{Runner: f, Binary: "clab"}
 	if err := c.Lifecycle(context.Background(), "lab.clab.yml", "n1", "start"); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"clab", "start", "--topo", "lab.clab.yml", "--node", "n1"}, {"clab", "deploy", "--topo", "lab.clab.yml", "--format", "json"}}
+	want := [][]string{{"clab", "start", "--topo", "lab.clab.yml", "--node", "n1"}}
 	if !reflect.DeepEqual(f.argv, want) {
 		t.Fatalf("commands = %#v, want %#v", f.argv, want)
+	}
+}
+
+func TestNativeStartFailureIsNotHiddenByDeployment(t *testing.T) {
+	f := &fakeRunner{result: Result{ExitCode: 1, Stderr: []byte("native start failed")}}
+	c := &Containerlab{Runner: f, Binary: "clab"}
+	if err := c.Lifecycle(context.Background(), "lab.clab.yml", "n1", "start"); err == nil {
+		t.Fatal("native start failure hidden")
+	}
+	if len(f.argv) != 1 || f.argv[0][1] != "start" {
+		t.Fatalf("unexpected fallback: %v", f.argv)
 	}
 }
 

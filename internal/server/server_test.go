@@ -20,6 +20,7 @@ import (
 )
 
 type fakeBackend struct {
+	runtimeErr   error
 	nameConflict error
 	calls        []string
 	execResults  []engine.Result
@@ -32,6 +33,7 @@ func (f *fakeBackend) CheckLabNameAvailable(context.Context, string) error {
 func (f *fakeBackend) CheckSessionOwnership(context.Context, string, string) error {
 	return f.nameConflict
 }
+func (f *fakeBackend) RestoreAttachments(context.Context, string, string) error { return nil }
 
 func (f *fakeBackend) call(value string)                          { f.calls = append(f.calls, value) }
 func (f *fakeBackend) Doctor(context.Context) error               { f.call("doctor"); return nil }
@@ -42,6 +44,9 @@ func (f *fakeBackend) Plan(_ context.Context, _ string) ([]byte, error) {
 	return []byte(`{"dry-run":true,"added-nodes":["new"]}`), nil
 }
 func (f *fakeBackend) ContainerName(_ context.Context, lab, node string) (string, error) {
+	if f.runtimeErr != nil {
+		return "", f.runtimeErr
+	}
 	return "native-" + lab + "-" + node, nil
 }
 func (f *fakeBackend) ProofIsolation(_ context.Context, _ string, nodes []string) error {

@@ -113,7 +113,7 @@ class Session:
             request.topology.CopyFrom(topology)
         return json.loads(self.client.rpc.PlanTopology(request).json)
 
-    def apply(self, topology: pb.TopologySource, approved_plan: dict, *, nodes: dict | None = None) -> None:
+    def apply(self, topology: pb.TopologySource | None, approved_plan: dict, *, nodes: dict | None = None) -> None:
         """Recheck approved native impact, then reconcile; failures may be partial."""
         self.value = self.client.rpc.ApplyTopology(pb.ApplyTopologyRequest(
             session_id=self.id, topology=topology,

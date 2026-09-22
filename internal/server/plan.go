@@ -52,6 +52,15 @@ func (s *Server) PlanTopology(ctx context.Context, req *labv1.PlanTopologyReques
 }
 
 func prepareDraft(r *session.Record, source *labv1.TopologySource) (*spec.Prepared, error) {
+	if source == nil {
+		raw, err := os.ReadFile(r.TopologyPath)
+		if err != nil {
+			return nil, err
+		}
+		// Current topology already includes SDK attachment binds. Reinjecting
+		// them would duplicate mounts and introduce artificial native drift.
+		return spec.Prepare(raw, r.Name, r.ID, r.AllowExternalAccess)
+	}
 	raw, base, err := topologyBytes(source)
 	if err != nil {
 		return nil, err

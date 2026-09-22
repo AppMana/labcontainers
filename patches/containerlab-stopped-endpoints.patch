@@ -1,0 +1,70 @@
+diff --git a/core/stopped_endpoint_test.go b/core/stopped_endpoint_test.go
+new file mode 100644
+index 00000000..50bf3ffd
+--- /dev/null
++++ b/core/stopped_endpoint_test.go
+@@ -0,0 +1,44 @@
++package core
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/srl-labs/containerlab/mocks/mocknodes"
++	"github.com/srl-labs/containerlab/nodes"
++	"go.uber.org/mock/gomock"
++)
++
++func TestStoppedEndpointOwnershipWithoutNamespace(t *testing.T) {
++	for _, state := range []string{"starting", "recreating"} {
++		t.Run(state, func(t *testing.T) {
++			node := mocknodes.NewMockNode(gomock.NewController(t))
++			lab := &CLab{Nodes: map[string]nodes.Node{"vm": node}}
++			plan := newApplyPlan(nil, nil)
++			plan.desiredEndpointSet[applyEndpointKey{node: "vm", iface: "eth1"}] = struct{}{}
++			if state == "starting" {
++				plan.startNodeSet["vm"] = struct{}{}
++			} else {
++				plan.recreatedNodeSet["vm"] = struct{}{}
++			}
++			// No ExecFunction expectation: there is no usable namespace.
++			if err := lab.validateDesiredEndpointOwnership(context.Background(), plan); err != nil {
++				t.Fatal(err)
++			}
++		})
++	}
++}
++
++func TestStoppedEndpointStillValidatesPreservedNamespace(t *testing.T) {
++	node := mocknodes.NewMockNode(gomock.NewController(t))
++	node.EXPECT().ExecFunction(gomock.Any(), gomock.Any()).Return(errors.New("unowned interface"))
++	lab := &CLab{Nodes: map[string]nodes.Node{"vm": node}}
++	plan := newApplyPlan(nil, nil)
++	plan.startNodeSet["vm"] = struct{}{}
++	plan.desiredEndpointSet[applyEndpointKey{node: "vm", iface: "eth1"}] = struct{}{}
++	plan.setEndpointNode("vm", node)
++	if err := lab.validateDesiredEndpointOwnership(context.Background(), plan); err == nil {
++		t.Fatal("preserved namespace escaped ownership validation")
++	}
++}
+diff --git a/core/topology_reconcile.go b/core/topology_reconcile.go
+index 0a34f2b4..300567ef 100644
+--- a/core/topology_reconcile.go
++++ b/core/topology_reconcile.go
+@@ -450,6 +450,14 @@ func (c *CLab) validateDesiredEndpointOwnership(
+ 
+ 		node, exists := plan.endpointNode(key.node)
+ 		if !exists {
++			// Discovery records a parking namespace when one exists. A stopped
++			// or recreated node without one has no namespace to validate yet;
++			// its endpoints will be created after the node is started/deployed.
++			_, starting := plan.startNodeSet[key.node]
++			_, recreating := plan.recreatedNodeSet[key.node]
++			if starting || recreating {
++				continue
++			}
+ 			node, exists = c.applyLinkNode(key.node)
+ 		}
+ 		if !exists {
+

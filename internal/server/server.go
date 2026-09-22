@@ -31,6 +31,7 @@ var diskNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 var labNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
 type Backend interface {
+	RestoreAttachments(context.Context, string, string) error
 	CheckSessionOwnership(context.Context, string, string) error
 	CheckLabNameAvailable(context.Context, string) error
 	Doctor(context.Context) error
@@ -322,11 +323,21 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 		err = s.Backend.Lifecycle(ctx, r.TopologyPath, n.Name, action)
 	}
 	if err != nil {
+		n.State = "unknown"
+		_ = s.Store.Save(r)
+		s.event(r, "node."+action+".failed", map[string]any{"node": n.Name, "error": err.Error()})
 		return nil, status.Errorf(codes.Internal, "%s node: %v", action, err)
 	}
 	if action == "stop" || action == "crash" {
 		n.State = "stopped"
 	} else {
+		// A native start may return success after an auto-removed VM vanished.
+		// Verify runtime truth; never report a running node based on exit status.
+		if err := s.verifyRunningNode(ctx, r, n.Name); err != nil {
+			n.State = "unknown"
+			_ = s.Store.Save(r)
+			return nil, status.Errorf(codes.FailedPrecondition, "native %s did not establish a verified running node: %v; review Plan(nil) and Apply(nil, approvedPlan) for explicit recovery", action, err)
+		}
 		n.State = "running"
 	}
 	if err := s.Store.Save(r); err != nil {

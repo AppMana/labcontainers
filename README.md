@@ -5,24 +5,27 @@ lifecycle action. It resolves one running container using topology and node
 labels and sends SIGKILL, killing its QEMU process without guest shutdown.
 Attached disks persist. `PowerOff()` retains Containerlab stop semantics.
 
-Current lifecycle reconciliation can recreate a VM container and its root disk
-after start/restart; only explicitly attached persistent disks are covered by
-the persistence guarantee. Explicit `Plan`/`Apply` topology updates report and
-recheck native impact, but legacy `Start`/`Restart` have not yet been migrated to
-that approval flow. Do not treat a successful `Start` as
-proof that container identity or root-disk contents were preserved.
+`Start`/`Restart` invoke the requested native operation without falling back to
+whole-lab deployment. Native errors are preserved, and success requires a
+unique running container plus the target's isolation check. If a VM was
+auto-removed, or links need reconstruction, explicitly inspect `lab.Plan(ctx,
+nil)` and recover with `lab.Apply(ctx, nil, approvedPlan, nil)` (Python:
+`lab.plan()` / `lab.apply(None, approved_plan)`). Assert the permitted node
+impact before approving it. A plan may recreate a VM and its root disk; only
+explicitly attached persistent disks are covered by the persistence guarantee.
 
 VM teardown can recreate Containerlab veth links. Labcontainers journals Linux
 peer-container bridge memberships before crash/stop/restart/replacement and
-restores them before `Start` returns, so a caller does not need to reconnect
+restores them after successful native start or approved topology application,
+so a caller does not need to reconnect
 the switch port. Recovery is restricted to the same running, session-owned
 peer container IDs; missing peers or failed reattachment fail the operation
 and retain its retry journal. This preserves bridge membership, not arbitrary
 port configuration such as VLAN filters, qdiscs, or routes, nor configuration
 inside a replaced switch. Host bridges are not modified by this recovery.
 The current journal includes all bridge members on surviving Linux peers:
-overlapping multi-node outages may require starting both nodes and retrying
-the first failed `Start` once both cables exist. A peer replacement can also
+overlapping multi-node outages may require recovering both nodes and retrying
+once both cables exist. A peer replacement can also
 block an outstanding journal. These cases fail closed; simultaneous recovery
 without retries is not yet qualified.
 
@@ -40,6 +43,9 @@ test on a dedicated runner labelled `self-hosted`, `linux`, `x64`, `kvm`, and
 image's `repository@sha256:...` reference. For local reproduction run `make build`
 and `LABCONTAINERS_WINDOWS_LIVE=1 go test ./pkg/client -run '^TestLiveWindows$' -v -count=1 -timeout=18m`.
 The ordinary unit suite skips this privileged runtime test.
+VM recovery qualification uses the corrected native CLI described below; build
+it and set `LABCONTAINERS_CONTAINERLAB` before running these commands. The manual
+workflow does this automatically without replacing the host installation.
 
 The same workflow runs the Linux VM bridge-restart regression with a preloaded
 `LABCONTAINERS_VM_IMAGE` Actions variable (`repository@sha256:...`). Locally:
@@ -190,7 +196,10 @@ needs correction before general live reconciliation can be qualified.
 
 An isolated correction is included in `patches/containerlab-owned-eth0.patch`.
 It uses native endpoint ownership to distinguish data `eth0` from an unmarked
-management interface, in both discovery and namespace parking. Build it without
+management interface, in both discovery and namespace parking. A second patch,
+`containerlab-stopped-endpoints.patch`, avoids inspecting a nonexistent stopped
+container namespace while still checking ownership in preserved namespaces.
+Build the corrected CLI without
 altering the host installation or module cache:
 
 ```sh
@@ -202,7 +211,7 @@ LABCONTAINERS_CONTAINERLAB=/absolute/path/containerlab-owned-eth0 \
 ```
 
 The builder verifies the pinned version, runs native link/core tests, and embeds
-the patch digest in the CLI's commit metadata. `LABCONTAINERS_CONTAINERLAB`
+the combined patch digest in the CLI's commit metadata. `LABCONTAINERS_CONTAINERLAB`
 selects an explicit CLI for the child daemon; ordinary launches still use the
 host `containerlab`. The strict live no-op check fails on stock v0.79.0 and passes
 with the correction. No management NIC is added, and no interface is renamed.

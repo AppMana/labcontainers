@@ -227,8 +227,9 @@ type ApplyTopologyRequest struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	SessionId string          `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Topology  *TopologySource `protobuf:"bytes,2,opt,name=topology,proto3" json:"topology,omitempty"`
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Omit to reconcile runtime drift against the current desired topology.
+	Topology *TopologySource `protobuf:"bytes,2,opt,name=topology,proto3" json:"topology,omitempty"`
 	// Required native dry-run result explicitly approved by the caller.
 	ApprovedPlan *NativeApplyResult `protobuf:"bytes,3,opt,name=approved_plan,json=approvedPlan,proto3" json:"approved_plan,omitempty"`
 	// Control channels for newly added nodes; existing node extensions persist.

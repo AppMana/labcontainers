@@ -8,6 +8,7 @@ jobs:
     env:
       LABCONTAINERS_VM_LIVE: '1'
       LABCONTAINERS_VM_IMAGE: ${{ vars.LABCONTAINERS_VM_IMAGE }}
+      LABCONTAINERS_CONTAINERLAB: ${{ github.workspace }}/bin/containerlab-recovery
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,6 +21,8 @@ jobs:
           docker image inspect "$LABCONTAINERS_VM_IMAGE" >/dev/null
           test -c /dev/kvm
       - run: make build
+      - name: Build isolated native reconciliation corrections
+        run: bash scripts/build-containerlab.sh "$LABCONTAINERS_CONTAINERLAB"
       - name: Verify bridge connectivity across VM crash and restart
         shell: bash
         run: |
@@ -37,6 +40,7 @@ jobs:
     env:
       LABCONTAINERS_WINDOWS_LIVE: '1'
       LABCONTAINERS_WINDOWS_IMAGE: ${{ vars.LABCONTAINERS_WINDOWS_IMAGE }}
+      LABCONTAINERS_CONTAINERLAB: ${{ github.workspace }}/bin/containerlab-recovery
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -49,6 +53,8 @@ jobs:
           docker image inspect "$LABCONTAINERS_WINDOWS_IMAGE" >/dev/null
           test -c /dev/kvm
       - run: make build
+      - name: Build isolated native reconciliation corrections
+        run: bash scripts/build-containerlab.sh "$LABCONTAINERS_CONTAINERLAB"
       - name: Windows runtime and NTFS crash persistence
         shell: bash
         run: |

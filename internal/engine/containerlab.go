@@ -187,22 +187,15 @@ func (c *Containerlab) Lifecycle(ctx context.Context, topology, node, action str
 		return fmt.Errorf("unknown lifecycle action %q", action)
 	}
 	_, lifecycleErr := c.run(ctx, nil, action, "--topo", topology, "--node", node)
-	if action == "stop" {
+	if lifecycleErr != nil || action == "stop" {
 		return lifecycleErr
 	}
-	// Containerlab generic_vm containers are auto-removed when their wrapper is
-	// stopped. A successful start/restart can therefore leave no container.
-	// Full deploy restores missing links, but native reconciliation may recreate
-	// containers with drift, including a VM's root disk. Attached disks live
-	// outside those containers. Scoped reconciliation and impact reporting are
-	// still required before this can promise stable container identity.
-	deployErr := c.Deploy(ctx, topology)
-	if deployErr != nil && lifecycleErr != nil {
-		return errors.Join(lifecycleErr, deployErr)
-	}
-	if deployErr != nil {
-		return deployErr
-	}
+	// Do not turn a native start/restart into a whole-lab deployment. Missing
+	// containers or links require an explicitly reviewed Plan/Apply operation.
+	return c.restoreAttachments(ctx, topology, node)
+}
+
+func (c *Containerlab) RestoreAttachments(ctx context.Context, topology, node string) error {
 	return c.restoreAttachments(ctx, topology, node)
 }
 

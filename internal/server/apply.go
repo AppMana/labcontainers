@@ -22,8 +22,8 @@ func (s *Server) ApplyTopology(ctx context.Context, req *labv1.ApplyTopologyRequ
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var approved core.ApplyResult
-	if req.GetTopology() == nil || json.Unmarshal(req.GetApprovedPlan().GetJson(), &approved) != nil || !approved.DryRun {
-		return nil, status.Error(codes.InvalidArgument, "topology and an approved native dry-run plan are required")
+	if json.Unmarshal(req.GetApprovedPlan().GetJson(), &approved) != nil || !approved.DryRun {
+		return nil, status.Error(codes.InvalidArgument, "an approved native dry-run plan is required")
 	}
 	r, err := s.record(req.GetSessionId())
 	if err != nil {
@@ -116,6 +116,13 @@ func (s *Server) ApplyTopology(ctx context.Context, req *labv1.ApplyTopologyRequ
 	mutating = true
 	s.event(r, "topology.apply.requested", json.RawMessage(rawPlan))
 	err = s.Backend.Deploy(ctx, r.TopologyPath)
+	if err == nil {
+		for _, name := range prepared.Nodes {
+			if err = s.Backend.RestoreAttachments(ctx, r.TopologyPath, name); err != nil {
+				break
+			}
+		}
+	}
 	if err == nil {
 		err = s.Backend.ProofIsolation(ctx, r.Name, prepared.IsolatedNodes)
 	}

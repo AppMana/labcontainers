@@ -66,9 +66,7 @@ func TestLiveWindows(t *testing.T) {
 	if err := node.Crash(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := node.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+	recoverVM(t, ctx, lab, "vm")
 	_, err = lab.RunTimeline(ctx, &labv1.TimelineAction{Action: &labv1.TimelineAction_WaitExec{WaitExec: &labv1.WaitExec{Exec: &labv1.ExecRequest{Node: ref, Argv: []string{`C:\Windows\System32\cmd.exe`, "/c", "ver"}, TimeoutMillis: 10000}, TimeoutMillis: 600000, RetryMillis: 2000, StdoutContains: []byte("Windows")}}})
 	if err != nil {
 		t.Fatal(err)
