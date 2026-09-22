@@ -138,6 +138,7 @@ class Node {
   lifecycle(action, bootstrap) {
     return unary(this.session.client.rpc, "lifecycle", {node: this.ref(), action, bootstrap}, {deadline: Date.now() + 120000});
   }
+  crash() { return this.lifecycle("CRASH"); }
   powerOff() { return this.lifecycle("POWER_OFF"); }
   start() { return this.lifecycle("START"); }
   restart() { return this.lifecycle("RESTART"); }

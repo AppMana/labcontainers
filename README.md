@@ -1,5 +1,25 @@
 # Labcontainers
 
+Crash tests use `Node.Crash()` (Python/JavaScript `node.crash()`) or the `CRASH`
+lifecycle action. It resolves one running container using topology and node
+labels and sends SIGKILL, killing its QEMU process without guest shutdown.
+Attached disks persist. `PowerOff()` retains Containerlab stop semantics.
+
+Timelines accept `wait_exec`: a bounded guest predicate with an expected exit
+code and optional stdout/stderr substring matches. A match permits the next
+action; timeout aborts the timeline. Ordinary timeline `exec` now aborts on
+nonzero exit status. Observation and crash are separate operations: polling
+cannot guarantee a transient state remains active at the instant of kill.
+Exact application boundaries require an explicit barrier. Events record guest
+command exits and lifecycle completion.
+
+The manual `VM runtime qualification` workflow runs the Windows QGA/NTFS/crash
+test on a dedicated runner labelled `self-hosted`, `linux`, `x64`, `kvm`, and
+`seaweedfs-lab`. Set Actions variable `LABCONTAINERS_WINDOWS_IMAGE` to a preloaded
+image's `repository@sha256:...` reference. For local reproduction run `make build`
+and `LABCONTAINERS_WINDOWS_LIVE=1 go test ./pkg/client -run '^TestLiveWindows$' -v -count=1 -timeout=18m`.
+The ordinary unit suite skips this privileged runtime test.
+
 Labcontainers is a Testcontainers-style API for isolated container and virtual
 machine test networks. It keeps Containerlab as the topology and dataplane
 engine, and adds test-session ownership, VM control without a management NIC,

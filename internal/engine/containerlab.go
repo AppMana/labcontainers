@@ -150,6 +150,9 @@ func (c *Containerlab) Destroy(ctx context.Context, topology string) error {
 }
 
 func (c *Containerlab) Lifecycle(ctx context.Context, topology, node, action string) error {
+	if action == "crash" {
+		return c.crash(ctx, topology, node)
+	}
 	switch action {
 	case "stop", "start", "restart":
 	default:

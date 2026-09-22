@@ -13,7 +13,10 @@ import (
 	"github.com/appmana/labcontainers/internal/session"
 )
 
-type fakeBackend struct{ calls []string }
+type fakeBackend struct {
+	calls       []string
+	execResults []engine.Result
+}
 
 func (f *fakeBackend) call(value string)                          { f.calls = append(f.calls, value) }
 func (f *fakeBackend) Doctor(context.Context) error               { f.call("doctor"); return nil }
@@ -34,6 +37,11 @@ func (f *fakeBackend) Replace(_ context.Context, _, node string) error {
 }
 func (f *fakeBackend) Exec(_ context.Context, _, node, _ string, _ time.Duration, _ []byte, argv []string) (engine.Result, error) {
 	f.call("exec:" + node + ":" + argv[0])
+	if len(f.execResults) != 0 {
+		result := f.execResults[0]
+		f.execResults = f.execResults[1:]
+		return result, nil
+	}
 	return engine.Result{Stdout: []byte("ok")}, nil
 }
 func (f *fakeBackend) Put(_ context.Context, _, node, _, path string, _ uint32, _ []byte) error {
@@ -120,6 +128,34 @@ func TestTimelineRetainsDeclarationOrder(t *testing.T) {
 	want := []string{"exec:n1:first", "exec:n1:second"}
 	if got := backend.calls[len(backend.calls)-2:]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestTimelineWaitExecTriggersLifecycleAfterObservedEvent(t *testing.T) {
+	s, backend := testServer(t)
+	p := createTestSession(t, s)
+	ref := &labv1.NodeRef{SessionId: p.GetId(), Node: "n1"}
+	backend.execResults = []engine.Result{
+		{ExitCode: 1},
+		{ExitCode: 1},
+		{ExitCode: 0, Stdout: []byte("copy-active\n")},
+	}
+	result, err := s.RunTimeline(context.Background(), &labv1.RunTimelineRequest{SessionId: p.GetId(), Actions: []*labv1.TimelineAction{
+		{Action: &labv1.TimelineAction_WaitExec{WaitExec: &labv1.WaitExec{
+			Exec:        &labv1.ExecRequest{Node: ref, Argv: []string{"observe-copy"}},
+			RetryMillis: 1, TimeoutMillis: 1000, StdoutContains: []byte("copy-active"),
+		}}},
+		{Action: &labv1.TimelineAction_Lifecycle{Lifecycle: &labv1.LifecycleRequest{Node: ref, Action: labv1.LifecycleAction_POWER_OFF}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GetCompleted() != 2 {
+		t.Fatalf("completed %d", result.GetCompleted())
+	}
+	want := []string{"exec:n1:observe-copy", "exec:n1:observe-copy", "exec:n1:observe-copy", "stop:n1"}
+	if got := backend.calls[len(backend.calls)-len(want):]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
 	}
 }
 

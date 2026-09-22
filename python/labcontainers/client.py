@@ -135,6 +135,9 @@ class Node:
     def put(self, path: str, content: bytes, mode: int = 0o600) -> None:
         self.session.client._rpc.Put(pb.PutRequest(node=self._ref(), path=path, content=content, mode=mode))
 
+    def crash(self) -> None:
+        self._lifecycle(pb.CRASH)
+
     def power_off(self) -> None:
         self._lifecycle(pb.POWER_OFF)
 

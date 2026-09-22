@@ -247,6 +247,9 @@ func (n *Node) Put(ctx context.Context, path string, mode uint32, content []byte
 	return err
 }
 
+// Crash abruptly kills the node without guest shutdown. Attached disks persist.
+func (n *Node) Crash(ctx context.Context) error { return n.lifecycle(ctx, labv1.LifecycleAction_CRASH) }
+
 func (n *Node) PowerOff(ctx context.Context) error {
 	return n.lifecycle(ctx, labv1.LifecycleAction_POWER_OFF)
 }

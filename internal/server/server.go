@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -277,6 +278,8 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 	}
 	var action string
 	switch req.GetAction() {
+	case labv1.LifecycleAction_CRASH:
+		action = "crash"
 	case labv1.LifecycleAction_POWER_OFF:
 		action = "stop"
 	case labv1.LifecycleAction_START:
@@ -307,7 +310,7 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%s node: %v", action, err)
 	}
-	if action == "stop" {
+	if action == "stop" || action == "crash" {
 		n.State = "stopped"
 	} else {
 		n.State = "running"
@@ -445,7 +448,13 @@ func (s *Server) RunTimeline(ctx context.Context, req *labv1.RunTimelineRequest)
 			_, err = s.RevertFault(ctx, a.RevertFault)
 		case *labv1.TimelineAction_Exec:
 			a.Exec.Node.SessionId = req.GetSessionId()
-			_, err = s.Exec(ctx, a.Exec)
+			var result *labv1.ExecResponse
+			result, err = s.Exec(ctx, a.Exec)
+			if err == nil && result.GetExitCode() != 0 {
+				err = status.Errorf(codes.FailedPrecondition, "guest command exited %d", result.GetExitCode())
+			}
+		case *labv1.TimelineAction_WaitExec:
+			err = s.waitExec(ctx, req.GetSessionId(), a.WaitExec)
 		default:
 			err = status.Error(codes.InvalidArgument, "timeline action is required")
 		}
@@ -455,6 +464,48 @@ func (s *Server) RunTimeline(ctx context.Context, req *labv1.RunTimelineRequest)
 		}
 	}
 	return &labv1.TimelineResult{Completed: int32(len(req.GetActions())), FaultIds: created}, nil
+}
+
+func (s *Server) waitExec(ctx context.Context, sessionID string, wait *labv1.WaitExec) error {
+	if wait == nil || wait.GetExec() == nil || wait.GetExec().GetNode() == nil || len(wait.GetExec().GetArgv()) == 0 {
+		return status.Error(codes.InvalidArgument, "wait_exec requires an executable guest predicate")
+	}
+	retry := time.Duration(wait.GetRetryMillis()) * time.Millisecond
+	if retry <= 0 {
+		retry = 100 * time.Millisecond
+	}
+	timeout := time.Duration(wait.GetTimeoutMillis()) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if timeout > 10*time.Minute {
+		return status.Error(codes.InvalidArgument, "wait_exec timeout exceeds 10 minutes")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	execRequest := wait.GetExec()
+	execRequest.Node.SessionId = sessionID
+	var last string
+	for {
+		result, err := s.Exec(waitCtx, execRequest)
+		if err == nil {
+			last = fmt.Sprintf("exit=%d stdout=%q stderr=%q", result.GetExitCode(), result.GetStdout(), result.GetStderr())
+			if result.GetExitCode() == wait.GetExpectedExitCode() &&
+				strings.Contains(string(result.GetStdout()), string(wait.GetStdoutContains())) &&
+				strings.Contains(string(result.GetStderr()), string(wait.GetStderrContains())) {
+				return nil
+			}
+		} else {
+			last = err.Error()
+		}
+		timer := time.NewTimer(retry)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return status.Errorf(codes.DeadlineExceeded, "wait_exec predicate not satisfied: %s", last)
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *Server) Scavenge(ctx context.Context, now time.Time) error {

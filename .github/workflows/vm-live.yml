@@ -1,0 +1,33 @@
+name: VM runtime qualification
+on:
+  workflow_dispatch:
+jobs:
+  windows:
+    runs-on: [self-hosted, linux, x64, kvm, seaweedfs-lab]
+    timeout-minutes: 25
+    env:
+      LABCONTAINERS_WINDOWS_LIVE: '1'
+      LABCONTAINERS_WINDOWS_IMAGE: ${{ vars.LABCONTAINERS_WINDOWS_IMAGE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Require qualified image
+        shell: bash
+        run: |
+          [[ "$LABCONTAINERS_WINDOWS_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]
+          docker image inspect "$LABCONTAINERS_WINDOWS_IMAGE" >/dev/null
+          test -c /dev/kvm
+      - run: make build
+      - name: Windows runtime and NTFS crash persistence
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./pkg/client -list '^TestLiveWindows$' | grep -Fx TestLiveWindows
+          go test ./pkg/client -run '^TestLiveWindows$' -count=1 -v -timeout=18m | tee windows-live.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-runtime-results
+          path: windows-live.log

@@ -28,6 +28,8 @@ const (
 	LifecycleAction_START                        LifecycleAction = 2
 	LifecycleAction_RESTART                      LifecycleAction = 3
 	LifecycleAction_REPLACE                      LifecycleAction = 4
+	// SIGKILL the VM wrapper and QEMU without guest shutdown or cache flush.
+	LifecycleAction_CRASH LifecycleAction = 5
 )
 
 // Enum value maps for LifecycleAction.
@@ -38,6 +40,7 @@ var (
 		2: "START",
 		3: "RESTART",
 		4: "REPLACE",
+		5: "CRASH",
 	}
 	LifecycleAction_value = map[string]int32{
 		"LIFECYCLE_ACTION_UNSPECIFIED": 0,
@@ -45,6 +48,7 @@ var (
 		"START":                        2,
 		"RESTART":                      3,
 		"REPLACE":                      4,
+		"CRASH":                        5,
 	}
 )
 
@@ -1619,6 +1623,7 @@ type TimelineAction struct {
 	//	*TimelineAction_ApplyFault
 	//	*TimelineAction_RevertFault
 	//	*TimelineAction_Exec
+	//	*TimelineAction_WaitExec
 	Action isTimelineAction_Action `protobuf_oneof:"action"`
 }
 
@@ -1696,6 +1701,13 @@ func (x *TimelineAction) GetExec() *ExecRequest {
 	return nil
 }
 
+func (x *TimelineAction) GetWaitExec() *WaitExec {
+	if x, ok := x.GetAction().(*TimelineAction_WaitExec); ok {
+		return x.WaitExec
+	}
+	return nil
+}
+
 type isTimelineAction_Action interface {
 	isTimelineAction_Action()
 }
@@ -1716,6 +1728,10 @@ type TimelineAction_Exec struct {
 	Exec *ExecRequest `protobuf:"bytes,5,opt,name=exec,proto3,oneof"`
 }
 
+type TimelineAction_WaitExec struct {
+	WaitExec *WaitExec `protobuf:"bytes,6,opt,name=wait_exec,json=waitExec,proto3,oneof"`
+}
+
 func (*TimelineAction_Lifecycle) isTimelineAction_Action() {}
 
 func (*TimelineAction_ApplyFault) isTimelineAction_Action() {}
@@ -1723,6 +1739,98 @@ func (*TimelineAction_ApplyFault) isTimelineAction_Action() {}
 func (*TimelineAction_RevertFault) isTimelineAction_Action() {}
 
 func (*TimelineAction_Exec) isTimelineAction_Action() {}
+
+func (*TimelineAction_WaitExec) isTimelineAction_Action() {}
+
+// WaitExec retries a guest predicate until its result matches, then allows the
+// next timeline action to run. This makes event -> fault sequencing explicit
+// instead of relying on sleeps that can miss short-lived states.
+type WaitExec struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Exec             *ExecRequest `protobuf:"bytes,1,opt,name=exec,proto3" json:"exec,omitempty"`
+	RetryMillis      int64        `protobuf:"varint,2,opt,name=retry_millis,json=retryMillis,proto3" json:"retry_millis,omitempty"`
+	TimeoutMillis    int64        `protobuf:"varint,3,opt,name=timeout_millis,json=timeoutMillis,proto3" json:"timeout_millis,omitempty"`
+	ExpectedExitCode int32        `protobuf:"varint,4,opt,name=expected_exit_code,json=expectedExitCode,proto3" json:"expected_exit_code,omitempty"`
+	StdoutContains   []byte       `protobuf:"bytes,5,opt,name=stdout_contains,json=stdoutContains,proto3" json:"stdout_contains,omitempty"`
+	StderrContains   []byte       `protobuf:"bytes,6,opt,name=stderr_contains,json=stderrContains,proto3" json:"stderr_contains,omitempty"`
+}
+
+func (x *WaitExec) Reset() {
+	*x = WaitExec{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_api_v1_labcontainers_proto_msgTypes[24]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *WaitExec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WaitExec) ProtoMessage() {}
+
+func (x *WaitExec) ProtoReflect() protoreflect.Message {
+	mi := &file_api_v1_labcontainers_proto_msgTypes[24]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WaitExec.ProtoReflect.Descriptor instead.
+func (*WaitExec) Descriptor() ([]byte, []int) {
+	return file_api_v1_labcontainers_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *WaitExec) GetExec() *ExecRequest {
+	if x != nil {
+		return x.Exec
+	}
+	return nil
+}
+
+func (x *WaitExec) GetRetryMillis() int64 {
+	if x != nil {
+		return x.RetryMillis
+	}
+	return 0
+}
+
+func (x *WaitExec) GetTimeoutMillis() int64 {
+	if x != nil {
+		return x.TimeoutMillis
+	}
+	return 0
+}
+
+func (x *WaitExec) GetExpectedExitCode() int32 {
+	if x != nil {
+		return x.ExpectedExitCode
+	}
+	return 0
+}
+
+func (x *WaitExec) GetStdoutContains() []byte {
+	if x != nil {
+		return x.StdoutContains
+	}
+	return nil
+}
+
+func (x *WaitExec) GetStderrContains() []byte {
+	if x != nil {
+		return x.StderrContains
+	}
+	return nil
+}
 
 type RunTimelineRequest struct {
 	state         protoimpl.MessageState
@@ -1736,7 +1844,7 @@ type RunTimelineRequest struct {
 func (x *RunTimelineRequest) Reset() {
 	*x = RunTimelineRequest{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_v1_labcontainers_proto_msgTypes[24]
+		mi := &file_api_v1_labcontainers_proto_msgTypes[25]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1749,7 +1857,7 @@ func (x *RunTimelineRequest) String() string {
 func (*RunTimelineRequest) ProtoMessage() {}
 
 func (x *RunTimelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_v1_labcontainers_proto_msgTypes[24]
+	mi := &file_api_v1_labcontainers_proto_msgTypes[25]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1762,7 +1870,7 @@ func (x *RunTimelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunTimelineRequest.ProtoReflect.Descriptor instead.
 func (*RunTimelineRequest) Descriptor() ([]byte, []int) {
-	return file_api_v1_labcontainers_proto_rawDescGZIP(), []int{24}
+	return file_api_v1_labcontainers_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *RunTimelineRequest) GetSessionId() string {
@@ -1791,7 +1899,7 @@ type TimelineResult struct {
 func (x *TimelineResult) Reset() {
 	*x = TimelineResult{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_api_v1_labcontainers_proto_msgTypes[25]
+		mi := &file_api_v1_labcontainers_proto_msgTypes[26]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1804,7 +1912,7 @@ func (x *TimelineResult) String() string {
 func (*TimelineResult) ProtoMessage() {}
 
 func (x *TimelineResult) ProtoReflect() protoreflect.Message {
-	mi := &file_api_v1_labcontainers_proto_msgTypes[25]
+	mi := &file_api_v1_labcontainers_proto_msgTypes[26]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1817,7 +1925,7 @@ func (x *TimelineResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimelineResult.ProtoReflect.Descriptor instead.
 func (*TimelineResult) Descriptor() ([]byte, []int) {
-	return file_api_v1_labcontainers_proto_rawDescGZIP(), []int{25}
+	return file_api_v1_labcontainers_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *TimelineResult) GetCompleted() int32 {
@@ -2020,7 +2128,7 @@ var file_api_v1_labcontainers_proto_rawDesc = []byte{
 	0x01, 0x28, 0x09, 0x52, 0x02, 0x69, 0x64, 0x12, 0x12, 0x0a, 0x04, 0x6b, 0x69, 0x6e, 0x64, 0x18,
 	0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x04, 0x6b, 0x69, 0x6e, 0x64, 0x12, 0x16, 0x0a, 0x06, 0x61,
 	0x63, 0x74, 0x69, 0x76, 0x65, 0x18, 0x03, 0x20, 0x01, 0x28, 0x08, 0x52, 0x06, 0x61, 0x63, 0x74,
-	0x69, 0x76, 0x65, 0x22, 0xb9, 0x02, 0x0a, 0x0e, 0x54, 0x69, 0x6d, 0x65, 0x6c, 0x69, 0x6e, 0x65,
+	0x69, 0x76, 0x65, 0x22, 0xf4, 0x02, 0x0a, 0x0e, 0x54, 0x69, 0x6d, 0x65, 0x6c, 0x69, 0x6e, 0x65,
 	0x41, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x12, 0x1b, 0x0a, 0x09, 0x61, 0x74, 0x5f, 0x6d, 0x69, 0x6c,
 	0x6c, 0x69, 0x73, 0x18, 0x01, 0x20, 0x01, 0x28, 0x03, 0x52, 0x08, 0x61, 0x74, 0x4d, 0x69, 0x6c,
 	0x6c, 0x69, 0x73, 0x12, 0x42, 0x0a, 0x09, 0x6c, 0x69, 0x66, 0x65, 0x63, 0x79, 0x63, 0x6c, 0x65,
@@ -2039,26 +2147,47 @@ var file_api_v1_labcontainers_proto_rawDesc = []byte{
 	0x12, 0x33, 0x0a, 0x04, 0x65, 0x78, 0x65, 0x63, 0x18, 0x05, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1d,
 	0x2e, 0x6c, 0x61, 0x62, 0x63, 0x6f, 0x6e, 0x74, 0x61, 0x69, 0x6e, 0x65, 0x72, 0x73, 0x2e, 0x76,
 	0x31, 0x2e, 0x45, 0x78, 0x65, 0x63, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x48, 0x00, 0x52,
-	0x04, 0x65, 0x78, 0x65, 0x63, 0x42, 0x08, 0x0a, 0x06, 0x61, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x22,
-	0x6f, 0x0a, 0x12, 0x52, 0x75, 0x6e, 0x54, 0x69, 0x6d, 0x65, 0x6c, 0x69, 0x6e, 0x65, 0x52, 0x65,
-	0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x1d, 0x0a, 0x0a, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e,
-	0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x09, 0x73, 0x65, 0x73, 0x73, 0x69,
-	0x6f, 0x6e, 0x49, 0x64, 0x12, 0x3a, 0x0a, 0x07, 0x61, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x73, 0x18,
-	0x02, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x20, 0x2e, 0x6c, 0x61, 0x62, 0x63, 0x6f, 0x6e, 0x74, 0x61,
-	0x69, 0x6e, 0x65, 0x72, 0x73, 0x2e, 0x76, 0x31, 0x2e, 0x54, 0x69, 0x6d, 0x65, 0x6c, 0x69, 0x6e,
-	0x65, 0x41, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x52, 0x07, 0x61, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x73,
-	0x22, 0x4b, 0x0a, 0x0e, 0x54, 0x69, 0x6d, 0x65, 0x6c, 0x69, 0x6e, 0x65, 0x52, 0x65, 0x73, 0x75,
-	0x6c, 0x74, 0x12, 0x1c, 0x0a, 0x09, 0x63, 0x6f, 0x6d, 0x70, 0x6c, 0x65, 0x74, 0x65, 0x64, 0x18,
-	0x01, 0x20, 0x01, 0x28, 0x05, 0x52, 0x09, 0x63, 0x6f, 0x6d, 0x70, 0x6c, 0x65, 0x74, 0x65, 0x64,
-	0x12, 0x1b, 0x0a, 0x09, 0x66, 0x61, 0x75, 0x6c, 0x74, 0x5f, 0x69, 0x64, 0x73, 0x18, 0x02, 0x20,
-	0x03, 0x28, 0x09, 0x52, 0x08, 0x66, 0x61, 0x75, 0x6c, 0x74, 0x49, 0x64, 0x73, 0x2a, 0x67, 0x0a,
-	0x0f, 0x4c, 0x69, 0x66, 0x65, 0x63, 0x79, 0x63, 0x6c, 0x65, 0x41, 0x63, 0x74, 0x69, 0x6f, 0x6e,
-	0x12, 0x20, 0x0a, 0x1c, 0x4c, 0x49, 0x46, 0x45, 0x43, 0x59, 0x43, 0x4c, 0x45, 0x5f, 0x41, 0x43,
-	0x54, 0x49, 0x4f, 0x4e, 0x5f, 0x55, 0x4e, 0x53, 0x50, 0x45, 0x43, 0x49, 0x46, 0x49, 0x45, 0x44,
-	0x10, 0x00, 0x12, 0x0d, 0x0a, 0x09, 0x50, 0x4f, 0x57, 0x45, 0x52, 0x5f, 0x4f, 0x46, 0x46, 0x10,
-	0x01, 0x12, 0x09, 0x0a, 0x05, 0x53, 0x54, 0x41, 0x52, 0x54, 0x10, 0x02, 0x12, 0x0b, 0x0a, 0x07,
-	0x52, 0x45, 0x53, 0x54, 0x41, 0x52, 0x54, 0x10, 0x03, 0x12, 0x0b, 0x0a, 0x07, 0x52, 0x45, 0x50,
-	0x4c, 0x41, 0x43, 0x45, 0x10, 0x04, 0x32, 0x83, 0x06, 0x0a, 0x0d, 0x4c, 0x61, 0x62, 0x63, 0x6f,
+	0x04, 0x65, 0x78, 0x65, 0x63, 0x12, 0x39, 0x0a, 0x09, 0x77, 0x61, 0x69, 0x74, 0x5f, 0x65, 0x78,
+	0x65, 0x63, 0x18, 0x06, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1a, 0x2e, 0x6c, 0x61, 0x62, 0x63, 0x6f,
+	0x6e, 0x74, 0x61, 0x69, 0x6e, 0x65, 0x72, 0x73, 0x2e, 0x76, 0x31, 0x2e, 0x57, 0x61, 0x69, 0x74,
+	0x45, 0x78, 0x65, 0x63, 0x48, 0x00, 0x52, 0x08, 0x77, 0x61, 0x69, 0x74, 0x45, 0x78, 0x65, 0x63,
+	0x42, 0x08, 0x0a, 0x06, 0x61, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x22, 0x87, 0x02, 0x0a, 0x08, 0x57,
+	0x61, 0x69, 0x74, 0x45, 0x78, 0x65, 0x63, 0x12, 0x31, 0x0a, 0x04, 0x65, 0x78, 0x65, 0x63, 0x18,
+	0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1d, 0x2e, 0x6c, 0x61, 0x62, 0x63, 0x6f, 0x6e, 0x74, 0x61,
+	0x69, 0x6e, 0x65, 0x72, 0x73, 0x2e, 0x76, 0x31, 0x2e, 0x45, 0x78, 0x65, 0x63, 0x52, 0x65, 0x71,
+	0x75, 0x65, 0x73, 0x74, 0x52, 0x04, 0x65, 0x78, 0x65, 0x63, 0x12, 0x21, 0x0a, 0x0c, 0x72, 0x65,
+	0x74, 0x72, 0x79, 0x5f, 0x6d, 0x69, 0x6c, 0x6c, 0x69, 0x73, 0x18, 0x02, 0x20, 0x01, 0x28, 0x03,
+	0x52, 0x0b, 0x72, 0x65, 0x74, 0x72, 0x79, 0x4d, 0x69, 0x6c, 0x6c, 0x69, 0x73, 0x12, 0x25, 0x0a,
+	0x0e, 0x74, 0x69, 0x6d, 0x65, 0x6f, 0x75, 0x74, 0x5f, 0x6d, 0x69, 0x6c, 0x6c, 0x69, 0x73, 0x18,
+	0x03, 0x20, 0x01, 0x28, 0x03, 0x52, 0x0d, 0x74, 0x69, 0x6d, 0x65, 0x6f, 0x75, 0x74, 0x4d, 0x69,
+	0x6c, 0x6c, 0x69, 0x73, 0x12, 0x2c, 0x0a, 0x12, 0x65, 0x78, 0x70, 0x65, 0x63, 0x74, 0x65, 0x64,
+	0x5f, 0x65, 0x78, 0x69, 0x74, 0x5f, 0x63, 0x6f, 0x64, 0x65, 0x18, 0x04, 0x20, 0x01, 0x28, 0x05,
+	0x52, 0x10, 0x65, 0x78, 0x70, 0x65, 0x63, 0x74, 0x65, 0x64, 0x45, 0x78, 0x69, 0x74, 0x43, 0x6f,
+	0x64, 0x65, 0x12, 0x27, 0x0a, 0x0f, 0x73, 0x74, 0x64, 0x6f, 0x75, 0x74, 0x5f, 0x63, 0x6f, 0x6e,
+	0x74, 0x61, 0x69, 0x6e, 0x73, 0x18, 0x05, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x0e, 0x73, 0x74, 0x64,
+	0x6f, 0x75, 0x74, 0x43, 0x6f, 0x6e, 0x74, 0x61, 0x69, 0x6e, 0x73, 0x12, 0x27, 0x0a, 0x0f, 0x73,
+	0x74, 0x64, 0x65, 0x72, 0x72, 0x5f, 0x63, 0x6f, 0x6e, 0x74, 0x61, 0x69, 0x6e, 0x73, 0x18, 0x06,
+	0x20, 0x01, 0x28, 0x0c, 0x52, 0x0e, 0x73, 0x74, 0x64, 0x65, 0x72, 0x72, 0x43, 0x6f, 0x6e, 0x74,
+	0x61, 0x69, 0x6e, 0x73, 0x22, 0x6f, 0x0a, 0x12, 0x52, 0x75, 0x6e, 0x54, 0x69, 0x6d, 0x65, 0x6c,
+	0x69, 0x6e, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x1d, 0x0a, 0x0a, 0x73, 0x65,
+	0x73, 0x73, 0x69, 0x6f, 0x6e, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x09,
+	0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x49, 0x64, 0x12, 0x3a, 0x0a, 0x07, 0x61, 0x63, 0x74,
+	0x69, 0x6f, 0x6e, 0x73, 0x18, 0x02, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x20, 0x2e, 0x6c, 0x61, 0x62,
+	0x63, 0x6f, 0x6e, 0x74, 0x61, 0x69, 0x6e, 0x65, 0x72, 0x73, 0x2e, 0x76, 0x31, 0x2e, 0x54, 0x69,
+	0x6d, 0x65, 0x6c, 0x69, 0x6e, 0x65, 0x41, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x52, 0x07, 0x61, 0x63,
+	0x74, 0x69, 0x6f, 0x6e, 0x73, 0x22, 0x4b, 0x0a, 0x0e, 0x54, 0x69, 0x6d, 0x65, 0x6c, 0x69, 0x6e,
+	0x65, 0x52, 0x65, 0x73, 0x75, 0x6c, 0x74, 0x12, 0x1c, 0x0a, 0x09, 0x63, 0x6f, 0x6d, 0x70, 0x6c,
+	0x65, 0x74, 0x65, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x05, 0x52, 0x09, 0x63, 0x6f, 0x6d, 0x70,
+	0x6c, 0x65, 0x74, 0x65, 0x64, 0x12, 0x1b, 0x0a, 0x09, 0x66, 0x61, 0x75, 0x6c, 0x74, 0x5f, 0x69,
+	0x64, 0x73, 0x18, 0x02, 0x20, 0x03, 0x28, 0x09, 0x52, 0x08, 0x66, 0x61, 0x75, 0x6c, 0x74, 0x49,
+	0x64, 0x73, 0x2a, 0x72, 0x0a, 0x0f, 0x4c, 0x69, 0x66, 0x65, 0x63, 0x79, 0x63, 0x6c, 0x65, 0x41,
+	0x63, 0x74, 0x69, 0x6f, 0x6e, 0x12, 0x20, 0x0a, 0x1c, 0x4c, 0x49, 0x46, 0x45, 0x43, 0x59, 0x43,
+	0x4c, 0x45, 0x5f, 0x41, 0x43, 0x54, 0x49, 0x4f, 0x4e, 0x5f, 0x55, 0x4e, 0x53, 0x50, 0x45, 0x43,
+	0x49, 0x46, 0x49, 0x45, 0x44, 0x10, 0x00, 0x12, 0x0d, 0x0a, 0x09, 0x50, 0x4f, 0x57, 0x45, 0x52,
+	0x5f, 0x4f, 0x46, 0x46, 0x10, 0x01, 0x12, 0x09, 0x0a, 0x05, 0x53, 0x54, 0x41, 0x52, 0x54, 0x10,
+	0x02, 0x12, 0x0b, 0x0a, 0x07, 0x52, 0x45, 0x53, 0x54, 0x41, 0x52, 0x54, 0x10, 0x03, 0x12, 0x0b,
+	0x0a, 0x07, 0x52, 0x45, 0x50, 0x4c, 0x41, 0x43, 0x45, 0x10, 0x04, 0x12, 0x09, 0x0a, 0x05, 0x43,
+	0x52, 0x41, 0x53, 0x48, 0x10, 0x05, 0x32, 0x83, 0x06, 0x0a, 0x0d, 0x4c, 0x61, 0x62, 0x63, 0x6f,
 	0x6e, 0x74, 0x61, 0x69, 0x6e, 0x65, 0x72, 0x73, 0x12, 0x52, 0x0a, 0x0d, 0x43, 0x72, 0x65, 0x61,
 	0x74, 0x65, 0x53, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x12, 0x26, 0x2e, 0x6c, 0x61, 0x62, 0x63,
 	0x6f, 0x6e, 0x74, 0x61, 0x69, 0x6e, 0x65, 0x72, 0x73, 0x2e, 0x76, 0x31, 0x2e, 0x43, 0x72, 0x65,
@@ -2126,7 +2255,7 @@ func file_api_v1_labcontainers_proto_rawDescGZIP() []byte {
 }
 
 var file_api_v1_labcontainers_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_api_v1_labcontainers_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_api_v1_labcontainers_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_api_v1_labcontainers_proto_goTypes = []interface{}{
 	(LifecycleAction)(0),          // 0: labcontainers.v1.LifecycleAction
 	(*Empty)(nil),                 // 1: labcontainers.v1.Empty
@@ -2153,18 +2282,19 @@ var file_api_v1_labcontainers_proto_goTypes = []interface{}{
 	(*FaultRef)(nil),              // 22: labcontainers.v1.FaultRef
 	(*Fault)(nil),                 // 23: labcontainers.v1.Fault
 	(*TimelineAction)(nil),        // 24: labcontainers.v1.TimelineAction
-	(*RunTimelineRequest)(nil),    // 25: labcontainers.v1.RunTimelineRequest
-	(*TimelineResult)(nil),        // 26: labcontainers.v1.TimelineResult
-	nil,                           // 27: labcontainers.v1.LabSpec.NodesEntry
-	nil,                           // 28: labcontainers.v1.CreateSessionRequest.LabelsEntry
+	(*WaitExec)(nil),              // 25: labcontainers.v1.WaitExec
+	(*RunTimelineRequest)(nil),    // 26: labcontainers.v1.RunTimelineRequest
+	(*TimelineResult)(nil),        // 27: labcontainers.v1.TimelineResult
+	nil,                           // 28: labcontainers.v1.LabSpec.NodesEntry
+	nil,                           // 29: labcontainers.v1.CreateSessionRequest.LabelsEntry
 }
 var file_api_v1_labcontainers_proto_depIdxs = []int32{
 	4,  // 0: labcontainers.v1.NodeExtension.bootstrap:type_name -> labcontainers.v1.BootstrapData
 	5,  // 1: labcontainers.v1.NodeExtension.disks:type_name -> labcontainers.v1.Disk
 	2,  // 2: labcontainers.v1.LabSpec.topology:type_name -> labcontainers.v1.TopologySource
-	27, // 3: labcontainers.v1.LabSpec.nodes:type_name -> labcontainers.v1.LabSpec.NodesEntry
+	28, // 3: labcontainers.v1.LabSpec.nodes:type_name -> labcontainers.v1.LabSpec.NodesEntry
 	6,  // 4: labcontainers.v1.CreateSessionRequest.spec:type_name -> labcontainers.v1.LabSpec
-	28, // 5: labcontainers.v1.CreateSessionRequest.labels:type_name -> labcontainers.v1.CreateSessionRequest.LabelsEntry
+	29, // 5: labcontainers.v1.CreateSessionRequest.labels:type_name -> labcontainers.v1.CreateSessionRequest.LabelsEntry
 	13, // 6: labcontainers.v1.Session.nodes:type_name -> labcontainers.v1.Node
 	12, // 7: labcontainers.v1.ExecRequest.node:type_name -> labcontainers.v1.NodeRef
 	12, // 8: labcontainers.v1.PutRequest.node:type_name -> labcontainers.v1.NodeRef
@@ -2178,33 +2308,35 @@ var file_api_v1_labcontainers_proto_depIdxs = []int32{
 	21, // 16: labcontainers.v1.TimelineAction.apply_fault:type_name -> labcontainers.v1.ApplyFaultRequest
 	22, // 17: labcontainers.v1.TimelineAction.revert_fault:type_name -> labcontainers.v1.FaultRef
 	14, // 18: labcontainers.v1.TimelineAction.exec:type_name -> labcontainers.v1.ExecRequest
-	24, // 19: labcontainers.v1.RunTimelineRequest.actions:type_name -> labcontainers.v1.TimelineAction
-	3,  // 20: labcontainers.v1.LabSpec.NodesEntry.value:type_name -> labcontainers.v1.NodeExtension
-	7,  // 21: labcontainers.v1.Labcontainers.CreateSession:input_type -> labcontainers.v1.CreateSessionRequest
-	8,  // 22: labcontainers.v1.Labcontainers.GetSession:input_type -> labcontainers.v1.SessionRef
-	10, // 23: labcontainers.v1.Labcontainers.DestroySession:input_type -> labcontainers.v1.DestroySessionRequest
-	11, // 24: labcontainers.v1.Labcontainers.KeepSession:input_type -> labcontainers.v1.KeepSessionRequest
-	14, // 25: labcontainers.v1.Labcontainers.Exec:input_type -> labcontainers.v1.ExecRequest
-	16, // 26: labcontainers.v1.Labcontainers.Put:input_type -> labcontainers.v1.PutRequest
-	17, // 27: labcontainers.v1.Labcontainers.Lifecycle:input_type -> labcontainers.v1.LifecycleRequest
-	21, // 28: labcontainers.v1.Labcontainers.ApplyFault:input_type -> labcontainers.v1.ApplyFaultRequest
-	22, // 29: labcontainers.v1.Labcontainers.RevertFault:input_type -> labcontainers.v1.FaultRef
-	25, // 30: labcontainers.v1.Labcontainers.RunTimeline:input_type -> labcontainers.v1.RunTimelineRequest
-	9,  // 31: labcontainers.v1.Labcontainers.CreateSession:output_type -> labcontainers.v1.Session
-	9,  // 32: labcontainers.v1.Labcontainers.GetSession:output_type -> labcontainers.v1.Session
-	1,  // 33: labcontainers.v1.Labcontainers.DestroySession:output_type -> labcontainers.v1.Empty
-	9,  // 34: labcontainers.v1.Labcontainers.KeepSession:output_type -> labcontainers.v1.Session
-	15, // 35: labcontainers.v1.Labcontainers.Exec:output_type -> labcontainers.v1.ExecResponse
-	1,  // 36: labcontainers.v1.Labcontainers.Put:output_type -> labcontainers.v1.Empty
-	13, // 37: labcontainers.v1.Labcontainers.Lifecycle:output_type -> labcontainers.v1.Node
-	23, // 38: labcontainers.v1.Labcontainers.ApplyFault:output_type -> labcontainers.v1.Fault
-	1,  // 39: labcontainers.v1.Labcontainers.RevertFault:output_type -> labcontainers.v1.Empty
-	26, // 40: labcontainers.v1.Labcontainers.RunTimeline:output_type -> labcontainers.v1.TimelineResult
-	31, // [31:41] is the sub-list for method output_type
-	21, // [21:31] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	25, // 19: labcontainers.v1.TimelineAction.wait_exec:type_name -> labcontainers.v1.WaitExec
+	14, // 20: labcontainers.v1.WaitExec.exec:type_name -> labcontainers.v1.ExecRequest
+	24, // 21: labcontainers.v1.RunTimelineRequest.actions:type_name -> labcontainers.v1.TimelineAction
+	3,  // 22: labcontainers.v1.LabSpec.NodesEntry.value:type_name -> labcontainers.v1.NodeExtension
+	7,  // 23: labcontainers.v1.Labcontainers.CreateSession:input_type -> labcontainers.v1.CreateSessionRequest
+	8,  // 24: labcontainers.v1.Labcontainers.GetSession:input_type -> labcontainers.v1.SessionRef
+	10, // 25: labcontainers.v1.Labcontainers.DestroySession:input_type -> labcontainers.v1.DestroySessionRequest
+	11, // 26: labcontainers.v1.Labcontainers.KeepSession:input_type -> labcontainers.v1.KeepSessionRequest
+	14, // 27: labcontainers.v1.Labcontainers.Exec:input_type -> labcontainers.v1.ExecRequest
+	16, // 28: labcontainers.v1.Labcontainers.Put:input_type -> labcontainers.v1.PutRequest
+	17, // 29: labcontainers.v1.Labcontainers.Lifecycle:input_type -> labcontainers.v1.LifecycleRequest
+	21, // 30: labcontainers.v1.Labcontainers.ApplyFault:input_type -> labcontainers.v1.ApplyFaultRequest
+	22, // 31: labcontainers.v1.Labcontainers.RevertFault:input_type -> labcontainers.v1.FaultRef
+	26, // 32: labcontainers.v1.Labcontainers.RunTimeline:input_type -> labcontainers.v1.RunTimelineRequest
+	9,  // 33: labcontainers.v1.Labcontainers.CreateSession:output_type -> labcontainers.v1.Session
+	9,  // 34: labcontainers.v1.Labcontainers.GetSession:output_type -> labcontainers.v1.Session
+	1,  // 35: labcontainers.v1.Labcontainers.DestroySession:output_type -> labcontainers.v1.Empty
+	9,  // 36: labcontainers.v1.Labcontainers.KeepSession:output_type -> labcontainers.v1.Session
+	15, // 37: labcontainers.v1.Labcontainers.Exec:output_type -> labcontainers.v1.ExecResponse
+	1,  // 38: labcontainers.v1.Labcontainers.Put:output_type -> labcontainers.v1.Empty
+	13, // 39: labcontainers.v1.Labcontainers.Lifecycle:output_type -> labcontainers.v1.Node
+	23, // 40: labcontainers.v1.Labcontainers.ApplyFault:output_type -> labcontainers.v1.Fault
+	1,  // 41: labcontainers.v1.Labcontainers.RevertFault:output_type -> labcontainers.v1.Empty
+	27, // 42: labcontainers.v1.Labcontainers.RunTimeline:output_type -> labcontainers.v1.TimelineResult
+	33, // [33:43] is the sub-list for method output_type
+	23, // [23:33] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_api_v1_labcontainers_proto_init() }
@@ -2502,7 +2634,7 @@ func file_api_v1_labcontainers_proto_init() {
 			}
 		}
 		file_api_v1_labcontainers_proto_msgTypes[24].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*RunTimelineRequest); i {
+			switch v := v.(*WaitExec); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2514,6 +2646,18 @@ func file_api_v1_labcontainers_proto_init() {
 			}
 		}
 		file_api_v1_labcontainers_proto_msgTypes[25].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*RunTimelineRequest); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_api_v1_labcontainers_proto_msgTypes[26].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*TimelineResult); i {
 			case 0:
 				return &v.state
@@ -2540,6 +2684,7 @@ func file_api_v1_labcontainers_proto_init() {
 		(*TimelineAction_ApplyFault)(nil),
 		(*TimelineAction_RevertFault)(nil),
 		(*TimelineAction_Exec)(nil),
+		(*TimelineAction_WaitExec)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2547,7 +2692,7 @@ func file_api_v1_labcontainers_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_api_v1_labcontainers_proto_rawDesc,
 			NumEnums:      1,
-			NumMessages:   28,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

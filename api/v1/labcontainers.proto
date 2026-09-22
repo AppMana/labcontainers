@@ -119,6 +119,8 @@ enum LifecycleAction {
   START = 2;
   RESTART = 3;
   REPLACE = 4;
+  // SIGKILL the VM wrapper and QEMU without guest shutdown or cache flush.
+  CRASH = 5;
 }
 
 message LifecycleRequest {
@@ -176,7 +178,20 @@ message TimelineAction {
     ApplyFaultRequest apply_fault = 3;
     FaultRef revert_fault = 4;
     ExecRequest exec = 5;
+    WaitExec wait_exec = 6;
   }
+}
+
+// WaitExec retries a guest predicate until its result matches, then allows the
+// next timeline action to run. This makes event -> fault sequencing explicit
+// instead of relying on sleeps that can miss short-lived states.
+message WaitExec {
+  ExecRequest exec = 1;
+  int64 retry_millis = 2;
+  int64 timeout_millis = 3;
+  int32 expected_exit_code = 4;
+  bytes stdout_contains = 5;
+  bytes stderr_contains = 6;
 }
 
 message RunTimelineRequest {
