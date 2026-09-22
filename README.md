@@ -442,6 +442,15 @@ default private client. On owner close or exit, the child daemon cleans unkept
 sessions, stays available for inspection, and periodically reaps expired leases.
 Save `Client.Socket()` and `Client.StateDirectory()` in Go (`client.socket` and
 `client.state_directory` in Python; `socket`/`stateDirectory` in JavaScript).
+For Go CLI workflows, `DeployPersistent` saves the session ID and live daemon
+socket. `OpenPersistent` returns the connected client and session for ordinary
+SDK operations; close that client when finished. `DestroyPersistent` reconnects
+to that same daemon rather than launching a competing state owner. An existing
+reference blocks another deployment. Legacy references without a socket, and
+unreachable daemons, require explicit recovery; they do not trigger automatic
+daemon replacement. The reference-file check is not a cross-process deployment
+lock, so callers must serialize deployment of the same persistent lab.
+
 Reconnect with `Dial`/`dial` while the kept lease is active. Do not launch a
 second daemon on a live daemon's socket/state directory. Explicit session
 destruction still overrides a keep; automatic owner cleanup does not, including
