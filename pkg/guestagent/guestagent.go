@@ -216,7 +216,64 @@ func (a *Agent) Upload(ctx context.Context, body io.Reader, path string) error {
 	}
 }
 
-func (a *Agent) Execute(ctx context.Context, argv []string, input []byte) (Result, error) {
+// execExited consumes QGA's completed-process record, including captured output.
+// Killing a process alone does not release that record: a reused Windows PID
+// can otherwise make a later command receive the old command's result.
+func (a *Agent) execExited(ctx context.Context, pid int) (bool, error) {
+	var state struct {
+		Exited bool `json:"exited"`
+	}
+	err := a.Call(ctx, "guest-exec-status", map[string]any{"pid": pid}, &state)
+	return state.Exited, err
+}
+
+func (a *Agent) reapExec(ctx context.Context, pid int) error {
+	for {
+		exited, err := a.execExited(ctx, pid)
+		if err != nil || exited {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (a *Agent) cleanupExec(ctx context.Context, pid int) error {
+	// Reap an already-exited command without targeting its possibly reused OS PID.
+	exited, err := a.execExited(ctx, pid)
+	if err != nil || exited {
+		return err
+	}
+	guestOS, err := a.OS(ctx)
+	if err != nil {
+		return err
+	}
+	path, args := "kill", []string{"-TERM", strconv.Itoa(pid)}
+	if isWindowsOS(guestOS) {
+		path, args = `C:\Windows\System32\taskkill.exe`, []string{"/PID", strconv.Itoa(pid), "/T", "/F"}
+	}
+	var helper struct {
+		PID int `json:"pid"`
+	}
+	if err := a.Call(ctx, "guest-exec", map[string]any{"path": path, "arg": args, "capture-output": false}, &helper); err != nil {
+		return err
+	}
+	if helper.PID <= 0 {
+		return fmt.Errorf("cleanup command returned no process ID")
+	}
+	// The cleanup command also owns a QGA record, even without output capture.
+	helperErr := a.reapExec(ctx, helper.PID)
+	targetErr := a.reapExec(ctx, pid)
+	if helperErr != nil {
+		return fmt.Errorf("reap cleanup PID %d: %w", helper.PID, helperErr)
+	}
+	return targetErr
+}
+
+func (a *Agent) Execute(ctx context.Context, argv []string, input []byte) (result Result, resultErr error) {
 	if len(argv) == 0 {
 		return Result{}, fmt.Errorf("empty command")
 	}
@@ -240,12 +297,9 @@ func (a *Agent) Execute(ctx context.Context, argv []string, input []byte) (Resul
 		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		guestOS, _ := a.OS(cleanup)
-		path, args := "kill", []string{"-TERM", strconv.Itoa(process.PID)}
-		if isWindowsOS(guestOS) {
-			path, args = `C:\Windows\System32\taskkill.exe`, []string{"/PID", strconv.Itoa(process.PID), "/T", "/F"}
+		if err := a.cleanupExec(cleanup, process.PID); err != nil {
+			resultErr = fmt.Errorf("%w; guest command cleanup: %v", resultErr, err)
 		}
-		_ = a.Call(cleanup, "guest-exec", map[string]any{"path": path, "arg": args, "capture-output": false}, nil)
 	}()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()

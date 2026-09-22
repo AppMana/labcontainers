@@ -113,6 +113,22 @@ use `node.ExecWithTimeout(ctx, 10*time.Minute, argv...)`; a longer context alone
 does not override the daemon default. A shorter context can still cancel the
 operation. A timeout/RPC error may not include partial command output: redirect
 diagnostics to a guest file and collect it before destroying the session.
+QGA retains exited-command metadata until `guest-exec-status` reaps it. Timeout
+cleanup checks/reaps an already-exited target first; otherwise it terminates
+the target and polls both target and termination-helper records. Cleanup errors
+are included in the failed command result. This prevents the reproduced case
+where Windows reuses an unreaped PID and a later setup command receives an old
+readiness probe's output. Run
+`go test -race ./pkg/guestagent -run TestExecuteTimeoutCannotReturnStaleReusedPIDResult`
+for the deterministic regression (it failed before the transport fix).
+This is not an exactly-once execution guarantee: lost launch/status replies,
+failed cleanup and concurrent PID reuse still require explicit qualification.
+Use run-specific completion tokens in qualification workloads and treat missing
+or wrong tokens as failures. Never retry a state-changing workload merely to
+turn an uncertain result into a pass. The helper is baked into the VM container
+image: rebuilding `labd` alone does not update it. Build a fresh image containing
+the corrected Linux `labcontainers-guest` helper for new labs; do not replace
+the helper underneath an active qualification run.
 
 ## Python
 
