@@ -143,6 +143,8 @@ enum LifecycleAction {
   POWER_OFF = 1;
   START = 2;
   RESTART = 3;
+  // Removes this node and prepares fresh disks/bootstrap. Leaves it
+  // replacement-pending; explicit approved PlanTopology/ApplyTopology recreate it.
   REPLACE = 4;
   // SIGKILL the VM wrapper and QEMU without guest shutdown or cache flush.
   CRASH = 5;

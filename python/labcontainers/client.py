@@ -173,8 +173,13 @@ class Node:
     def restart(self) -> None:
         self._lifecycle(pb.RESTART)
 
-    def replace(self, bootstrap: pb.BootstrapData | None = None) -> None:
+    def prepare_replacement(self, bootstrap: pb.BootstrapData | None = None) -> None:
+        """Remove this node and reset its disks; explicitly plan/apply to recreate."""
         self._lifecycle(pb.REPLACE, bootstrap)
+
+    def replace(self, bootstrap: pb.BootstrapData | None = None) -> None:
+        """Deprecated alias for prepare_replacement; does not deploy."""
+        self.prepare_replacement(bootstrap)
 
     def _lifecycle(self, action: int, bootstrap: pb.BootstrapData | None = None) -> None:
         request = pb.LifecycleRequest(node=self._ref(), action=action)

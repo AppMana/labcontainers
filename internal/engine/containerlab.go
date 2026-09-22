@@ -199,19 +199,27 @@ func (c *Containerlab) RestoreAttachments(ctx context.Context, topology, node st
 	return c.restoreAttachments(ctx, topology, node)
 }
 
-// Replace removes one node, then lets Containerlab's convergent full deploy restore that node and
-// all of its links without perturbing healthy nodes.
-func (c *Containerlab) Replace(ctx context.Context, topology, node string) error {
+// RemoveNode removes only the selected runtime node. Recreating it and its
+// links requires an explicitly approved native Plan/Apply operation.
+func (c *Containerlab) RemoveNode(ctx context.Context, topology, node string) error {
 	if err := c.saveAttachments(ctx, topology, node); err != nil {
 		return err
 	}
 	if _, err := c.run(ctx, nil, "destroy", "--topo", topology, "--node-filter", node); err != nil {
 		return err
 	}
-	if err := c.Deploy(ctx, topology); err != nil {
+	// Do not authorize disk reset based on command exit status alone. Include
+	// stopped containers: they may still hold the same writable disk mounts.
+	remaining, err := checked(ctx, c.Runner, nil, "docker", "ps", "-aq",
+		"--filter", "label=clab-topo-file="+topology,
+		"--filter", "label=clab-node-name="+node)
+	if err != nil {
 		return err
 	}
-	return c.restoreAttachments(ctx, topology, node)
+	if strings.TrimSpace(string(remaining.Stdout)) != "" {
+		return fmt.Errorf("node %q still has a runtime container after removal; disks must not be reset", node)
+	}
+	return nil
 }
 
 func (c *Containerlab) Exec(ctx context.Context, lab, node, control string, timeout time.Duration, stdin []byte, argv []string) (Result, error) {

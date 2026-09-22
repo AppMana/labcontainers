@@ -25,6 +25,7 @@ type fakeBackend struct {
 	calls        []string
 	execResults  []engine.Result
 	proofNodes   []string
+	removeHook   func() error
 }
 
 func (f *fakeBackend) CheckLabNameAvailable(context.Context, string) error {
@@ -138,8 +139,11 @@ func (f *fakeBackend) Lifecycle(_ context.Context, _, node, action string) error
 	f.call(action + ":" + node)
 	return nil
 }
-func (f *fakeBackend) Replace(_ context.Context, _, node string) error {
-	f.call("replace:" + node)
+func (f *fakeBackend) RemoveNode(_ context.Context, _, node string) error {
+	f.call("remove:" + node)
+	if f.removeHook != nil {
+		return f.removeHook()
+	}
 	return nil
 }
 func (f *fakeBackend) Exec(_ context.Context, _, node, _ string, _ time.Duration, _ []byte, argv []string) (engine.Result, error) {
@@ -268,7 +272,7 @@ func TestTimelineWaitExecTriggersLifecycleAfterObservedEvent(t *testing.T) {
 }
 
 func TestVMDisksAreSparseAndReplaceResetsThem(t *testing.T) {
-	s, _ := testServer(t)
+	s, backend := testServer(t)
 	p, err := s.CreateSession(context.Background(), &labv1.CreateSessionRequest{Spec: &labv1.LabSpec{
 		Topology: &labv1.TopologySource{Source: &labv1.TopologySource_Yaml{Yaml: []byte("name: vm\ntopology:\n  defaults: {network-mode: none}\n  nodes:\n    vm: {kind: linux, image: vm:test}\n")}},
 		Nodes:    map[string]*labv1.NodeExtension{"vm": {Control: "qga", Disks: []*labv1.Disk{{Name: "data", SizeBytes: 4096}}}},
@@ -288,8 +292,30 @@ func TestVMDisksAreSparseAndReplaceResetsThem(t *testing.T) {
 	if err := os.WriteFile(disk.Path, []byte("dirty"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Lifecycle(context.Background(), &labv1.LifecycleRequest{Node: &labv1.NodeRef{SessionId: p.GetId(), Node: "vm"}, Action: labv1.LifecycleAction_REPLACE}); err != nil {
+	backend.removeHook = func() error { return errors.New("node removal failed") }
+	request := &labv1.LifecycleRequest{Node: &labv1.NodeRef{SessionId: p.GetId(), Node: "vm"}, Action: labv1.LifecycleAction_REPLACE}
+	if _, err := s.Lifecycle(context.Background(), request); err == nil {
+		t.Fatal("ignored failure to remove the old VM")
+	}
+	if data, err := os.ReadFile(disk.Path); err != nil || string(data) != "dirty" {
+		t.Fatal("modified disks still held by the old VM")
+	}
+	backend.removeHook = func() error {
+		if data, err := os.ReadFile(disk.Path); err != nil || string(data) != "dirty" {
+			t.Fatal("reset disk before node removal")
+		}
+		return nil
+	}
+	before := len(backend.calls)
+	node, err := s.Lifecycle(context.Background(), request)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if node.GetState() != "replacement-pending" {
+		t.Fatalf("reported an unstarted replacement as %q", node.GetState())
+	}
+	if got := backend.calls[before:]; !reflect.DeepEqual(got, []string{"remove:vm"}) {
+		t.Fatalf("replacement silently performed additional operations: %v", got)
 	}
 	contents, err := os.ReadFile(disk.Path)
 	if err != nil {
@@ -297,6 +323,40 @@ func TestVMDisksAreSparseAndReplaceResetsThem(t *testing.T) {
 	}
 	if len(contents) != 4096 || contents[0] != 0 {
 		t.Fatal("replace did not reset the disposable disk")
+	}
+}
+
+func TestReplacementPreconditionsDoNotRemoveNodes(t *testing.T) {
+	for _, scenario := range []string{"foreign runtime", "active fault", "invalid bootstrap", "non-qga bootstrap"} {
+		t.Run(scenario, func(t *testing.T) {
+			s, backend := testServer(t)
+			p := createTestSession(t, s)
+			req := &labv1.LifecycleRequest{Node: &labv1.NodeRef{SessionId: p.GetId(), Node: "n1"}, Action: labv1.LifecycleAction_REPLACE}
+			switch scenario {
+			case "foreign runtime":
+				backend.nameConflict = errors.New("foreign runtime")
+			case "active fault":
+				r, err := s.Store.Get(p.GetId())
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.Faults = map[string]*session.Fault{"test": {ID: "test", Active: true}}
+				if err := s.Store.Save(r); err != nil {
+					t.Fatal(err)
+				}
+			case "invalid bootstrap":
+				req.Bootstrap = &labv1.BootstrapData{Format: "not-a-format", Value: []byte("invalid")}
+			case "non-qga bootstrap":
+				req.Bootstrap = &labv1.BootstrapData{Format: "cloud-config", Value: []byte("#cloud-config\n")}
+			}
+			before := len(backend.calls)
+			if _, err := s.Lifecycle(context.Background(), req); err == nil {
+				t.Fatal("invalid replacement accepted")
+			}
+			if len(backend.calls) != before {
+				t.Fatalf("precondition failure touched nodes: %v", backend.calls[before:])
+			}
+		})
 	}
 }
 

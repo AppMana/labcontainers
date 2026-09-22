@@ -170,6 +170,47 @@ func TestLive(t *testing.T) {
 		if _, err := lab.Node("adhoc").Exec(ctx, "true"); err == nil {
 			t.Fatal("removed node still exposed")
 		}
+		if err := lab.Node("server").PrepareReplacement(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lab.Node("server").Exec(ctx, "true"); err == nil {
+			t.Fatal("replacement preparation silently recreated the target")
+		}
+		if identity() != before {
+			t.Fatal("preparing replacement restarted the other node")
+		}
+		replacement, err := lab.Plan(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if replacement.DeployedLab || len(replacement.DeletedNodes) != 0 {
+			t.Fatalf("unexpected replacement impact: %+v", replacement)
+		}
+		for _, names := range [][]string{replacement.AddedNodes, replacement.RecreatedNodes, replacement.RestartedNodes, replacement.StartedNodes} {
+			for _, name := range names {
+				if name != "server" {
+					t.Fatalf("replacement would affect another node: %+v", replacement)
+				}
+			}
+		}
+		t.Logf("explicit replacement plan: %+v", replacement)
+		if err := lab.Apply(ctx, nil, replacement, nil); err != nil {
+			t.Fatal(err)
+		}
+		if identity() != before {
+			t.Fatal("approved replacement restarted the other node")
+		}
+		// Native filtered destroy deletes both veth ends. The approved plan
+		// exposes the recreated link, but clab does not replay configuration
+		// on an unchanged peer. This scenario explicitly configures its new
+		// endpoint; replacement must not silently restart/reconfigure peers.
+		if len(replacement.AddedLinks) != 1 || replacement.AddedLinks[0] != "client:eth0 -- server:eth0" {
+			t.Fatalf("missing peer endpoint impact: %+v", replacement)
+		}
+		configured, err = lab.Node("client").Exec(ctx, "ip", "address", "replace", "192.0.2.1/24", "dev", "eth0")
+		if err != nil || configured.GetExitCode() != 0 {
+			t.Fatalf("explicit peer endpoint configuration: %v %v", configured, err)
+		}
 	}
 	result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 	if err != nil {

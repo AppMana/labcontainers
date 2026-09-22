@@ -302,14 +302,26 @@ func (n *Node) Start(ctx context.Context) error { return n.lifecycle(ctx, labv1.
 func (n *Node) Restart(ctx context.Context) error {
 	return n.lifecycle(ctx, labv1.LifecycleAction_RESTART)
 }
-func (n *Node) Replace(ctx context.Context) error {
-	return n.lifecycle(ctx, labv1.LifecycleAction_REPLACE)
-}
 
-// ReplaceWithBootstrap recreates the node and supplies new first-boot data.
-func (n *Node) ReplaceWithBootstrap(ctx context.Context, data *labv1.BootstrapData) error {
+// PrepareReplacement removes this runtime node and resets its disposable
+// disks. It leaves the node replacement-pending. Review Session.Plan(ctx, nil)
+// and call Session.Apply with that approved native plan to recreate it.
+// Optional bootstrap data is installed after removal, before recreation.
+func (n *Node) PrepareReplacement(ctx context.Context, data *labv1.BootstrapData) error {
 	_, err := n.session.client.rpc.Lifecycle(ctx, &labv1.LifecycleRequest{Node: n.ref(), Action: labv1.LifecycleAction_REPLACE, Bootstrap: data})
 	return err
+}
+
+// Replace prepares replacement; it does not deploy. Deprecated: use
+// PrepareReplacement followed by an explicitly reviewed Plan/Apply.
+func (n *Node) Replace(ctx context.Context) error {
+	return n.PrepareReplacement(ctx, nil)
+}
+
+// ReplaceWithBootstrap prepares replacement and new first-boot data, but does
+// not deploy. Deprecated: use PrepareReplacement and explicit Plan/Apply.
+func (n *Node) ReplaceWithBootstrap(ctx context.Context, data *labv1.BootstrapData) error {
+	return n.PrepareReplacement(ctx, data)
 }
 
 func (n *Node) lifecycle(ctx context.Context, action labv1.LifecycleAction) error {

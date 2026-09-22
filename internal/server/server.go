@@ -42,7 +42,7 @@ type Backend interface {
 	ContainerName(context.Context, string, string) (string, error)
 	Destroy(context.Context, string) error
 	Lifecycle(context.Context, string, string, string) error
-	Replace(context.Context, string, string) error
+	RemoveNode(context.Context, string, string) error
 	Exec(context.Context, string, string, string, time.Duration, []byte, []string) (engine.Result, error)
 	Put(context.Context, string, string, string, string, uint32, []byte) error
 	SetLink(context.Context, string, string, string, string, bool) error
@@ -306,6 +306,35 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 		return nil, status.Error(codes.InvalidArgument, "lifecycle action is required")
 	}
 	if action == "replace" {
+		for _, fault := range r.Faults {
+			if fault.Active {
+				return nil, status.Error(codes.FailedPrecondition, "revert active faults before preparing replacement")
+			}
+		}
+		if err := s.Backend.CheckSessionOwnership(ctx, r.Name, r.ID); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+		// Validate caller data before stopping anything; only publish it after
+		// the old VM no longer holds the bootstrap and disposable disk files.
+		if len(req.GetBootstrap().GetValue()) != 0 {
+			if err := (bootstrap.Data{Format: req.GetBootstrap().GetFormat(), Value: req.GetBootstrap().GetValue()}).Validate(); err != nil {
+				return nil, status.Error(codes.InvalidArgument, err.Error())
+			}
+			if n.Control != "qga" || (n.BootstrapFormat != "" && n.BootstrapFormat != req.GetBootstrap().GetFormat()) {
+				return nil, status.Error(codes.InvalidArgument, "replacement bootstrap requires qga control and cannot change an existing format")
+			}
+		}
+		s.event(r, "node.replace.requested", map[string]any{"node": n.Name})
+		if err := s.Backend.RemoveNode(ctx, r.TopologyPath, n.Name); err != nil {
+			n.State = "unknown"
+			_ = s.Store.Save(r)
+			s.event(r, "node.replace.failed", map[string]any{"node": n.Name, "error": err.Error()})
+			return nil, status.Errorf(codes.Internal, "remove node before replacement: %v", err)
+		}
+		n.State = "replacement-pending"
+		if err := s.Store.Save(r); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
 		if len(req.GetBootstrap().GetValue()) != 0 {
 			if err := s.configureBootstrap(r, n, req.GetBootstrap()); err != nil {
 				return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -317,7 +346,6 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 		if err := resetDisks(n.Disks); err != nil {
 			return nil, status.Errorf(codes.Internal, "reset node disks: %v", err)
 		}
-		err = s.Backend.Replace(ctx, r.TopologyPath, n.Name)
 	} else {
 		s.event(r, "node."+action+".requested", map[string]any{"node": n.Name})
 		err = s.Backend.Lifecycle(ctx, r.TopologyPath, n.Name, action)
@@ -328,7 +356,9 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 		s.event(r, "node."+action+".failed", map[string]any{"node": n.Name, "error": err.Error()})
 		return nil, status.Errorf(codes.Internal, "%s node: %v", action, err)
 	}
-	if action == "stop" || action == "crash" {
+	if action == "replace" {
+		n.State = "replacement-pending"
+	} else if action == "stop" || action == "crash" {
 		n.State = "stopped"
 	} else {
 		// A native start may return success after an auto-removed VM vanished.

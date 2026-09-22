@@ -27,7 +27,9 @@ const (
 	LifecycleAction_POWER_OFF                    LifecycleAction = 1
 	LifecycleAction_START                        LifecycleAction = 2
 	LifecycleAction_RESTART                      LifecycleAction = 3
-	LifecycleAction_REPLACE                      LifecycleAction = 4
+	// Removes this node and prepares fresh disks/bootstrap. Leaves it
+	// replacement-pending; explicit approved PlanTopology/ApplyTopology recreate it.
+	LifecycleAction_REPLACE LifecycleAction = 4
 	// SIGKILL the VM wrapper and QEMU without guest shutdown or cache flush.
 	LifecycleAction_CRASH LifecycleAction = 5
 )

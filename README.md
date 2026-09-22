@@ -221,6 +221,27 @@ container addition/removal; Go additionally verifies a new data link carries
 traffic and unrelated containers retain both identity and start time. General
 VM topology-change and storage-fixture qualification remain outstanding.
 
+### Explicit fresh replacement
+
+`node.PrepareReplacement(ctx, bootstrap)` (Python `node.prepare_replacement()`)
+removes only that runtime node, then resets its disposable attached disks and
+optionally installs new bootstrap data. It leaves the node
+`replacement-pending`; it does **not** deploy the lab. If removal fails, disks
+and bootstrap are left untouched. Revert active faults first.
+
+Review `lab.Plan(ctx, nil)` and call `lab.Apply(ctx, nil, approvedPlan, nil)` to
+recreate it. Python uses `plan = lab.plan(); lab.apply(None, plan)` after the
+test checks the plan's permitted impact. Native filtered destruction removes
+both ends of veth links: the plan reports the new link, but a surviving peer's
+interface configuration is not automatically replayed. The scenario must
+explicitly configure the recreated peer endpoint as necessary. No hidden
+whole-lab deployment or peer restart is performed.
+
+Compatibility change: legacy `Replace`/`ReplaceWithBootstrap` and Python
+`replace` are deprecated aliases for this preparation phase, no longer a
+one-call remove-and-deploy operation. The raw `REPLACE` lifecycle action has
+the same preparation-only behavior. Callers must add explicit Plan/Apply.
+
 ## Kubernetes helpers
 
 The optional `pkg/kubernetes/kube` package contains the shared bastion-side

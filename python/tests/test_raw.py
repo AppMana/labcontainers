@@ -5,6 +5,29 @@ from labcontainers.client import Session
 
 
 class RawTransportTests(unittest.TestCase):
+    def test_replacement_only_requests_preparation(self):
+        class Transport:
+            def __init__(self):
+                self.requests = []
+
+            def Lifecycle(self, request, timeout):
+                self.requests.append(request)
+                return api.Node(name="guest", state="replacement-pending")
+
+        client = Client.__new__(Client)
+        client._rpc = Transport()
+        node = Session(client, api.Session(id="session")).node("guest")
+        data = api.BootstrapData(format="cloud-config", value=b"#cloud-config\n")
+        node.prepare_replacement(data)
+        self.assertEqual(len(client.rpc.requests), 1)
+        request = client.rpc.requests[0]
+        self.assertEqual(request.action, api.REPLACE)
+        self.assertEqual(request.node.node, "guest")
+        self.assertEqual(request.bootstrap, data)
+        node.replace()
+        self.assertEqual(len(client.rpc.requests), 2)
+        self.assertFalse(client.rpc.requests[1].HasField("bootstrap"))
+
     def test_apply_current_topology_keeps_native_approval(self):
         class Transport:
             def ApplyTopology(self, request):

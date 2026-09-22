@@ -10,12 +10,18 @@ import (
 )
 
 type fakeRunner struct {
-	result Result
-	argv   [][]string
+	result    Result
+	argv      [][]string
+	remaining string
 }
 
 func (f *fakeRunner) Run(_ context.Context, _ io.Reader, argv ...string) (Result, error) {
 	f.argv = append(f.argv, append([]string(nil), argv...))
+	if strings.HasPrefix(strings.Join(argv, " "), "docker ps -aq --filter label=clab-topo-file=") {
+		if strings.HasPrefix(argv[len(argv)-1], "label=clab-node-name=") {
+			return Result{Stdout: []byte(f.remaining)}, nil
+		}
+	}
 	if strings.HasPrefix(strings.Join(argv, " "), "docker ps --no-trunc --filter label=containerlab=") {
 		if argv[len(argv)-1] == "{{.Names}}" {
 			return Result{Stdout: []byte("custom-prefix-node\n")}, nil
@@ -51,19 +57,32 @@ func TestExplicitContainerlabBinaryDoesNotChangeHostDefault(t *testing.T) {
 	}
 }
 
-func TestReplaceUsesFilteredDestroyThenConvergence(t *testing.T) {
+func TestRemovalUsesOnlyFilteredDestroyWithoutConvergence(t *testing.T) {
 	f := &fakeRunner{}
 	c := &Containerlab{Runner: f, Binary: "clab"}
-	if err := c.Replace(context.Background(), "lab.clab.yml", "n1"); err != nil {
+	if err := c.RemoveNode(context.Background(), "lab.clab.yml", "n1"); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
 		{"docker", "ps", "--no-trunc", "--filter", "label=clab-topo-file=lab.clab.yml", "--filter", "label=clab-node-kind=linux", "--format", "{{.ID}}\t{{.Label \"clab-node-name\"}}"},
 		{"clab", "destroy", "--topo", "lab.clab.yml", "--node-filter", "n1"},
-		{"clab", "deploy", "--topo", "lab.clab.yml", "--format", "json"},
+		{"docker", "ps", "-aq", "--filter", "label=clab-topo-file=lab.clab.yml", "--filter", "label=clab-node-name=n1"},
 	}
 	if !reflect.DeepEqual(f.argv, want) {
 		t.Fatalf("commands = %#v, want %#v", f.argv, want)
+	}
+}
+
+func TestRemovalRejectsContainerSurvivingNativeDestroy(t *testing.T) {
+	f := &fakeRunner{remaining: "still-present\n"}
+	c := &Containerlab{Runner: f, Binary: "clab"}
+	if err := c.RemoveNode(context.Background(), "lab.clab.yml", "n1"); err == nil || !strings.Contains(err.Error(), "must not be reset") {
+		t.Fatalf("ignored surviving runtime: %v", err)
+	}
+	for _, args := range f.argv {
+		if args[0] == "clab" && args[1] == "deploy" {
+			t.Fatal("removal deployed the lab")
+		}
 	}
 }
 
