@@ -33,7 +33,11 @@ type Inspection struct {
 }
 
 func NewContainerlab() *Containerlab {
-	return &Containerlab{Runner: ExecRunner{}, Binary: "containerlab", Sudo: os.Geteuid() != 0}
+	binary := os.Getenv("LABCONTAINERS_CONTAINERLAB")
+	if binary == "" {
+		binary = "containerlab"
+	}
+	return &Containerlab{Runner: ExecRunner{}, Binary: binary, Sudo: os.Geteuid() != 0}
 }
 
 func (c *Containerlab) argv(args ...string) []string {

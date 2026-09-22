@@ -73,10 +73,14 @@ func TestLive(t *testing.T) {
 	// when it is an explicitly declared data interface with network-mode none.
 	// Preserve this native diagnostic, rather than claiming a no-op plan or
 	// filtering away a potentially disruptive link operation.
-	if len(plan.AddedLinks) != 1 || plan.AddedLinks[0] != "client:eth0 -- server:eth0" {
+	if os.Getenv("LABCONTAINERS_RECONCILE_LIVE") != "" {
+		if len(plan.AddedLinks)+len(plan.DeletedEndpoints) != 0 {
+			t.Fatalf("unchanged declared data eth0 must be a native no-op: %+v", plan)
+		}
+	} else if len(plan.AddedLinks) != 1 || plan.AddedLinks[0] != "client:eth0 -- server:eth0" {
 		t.Fatalf("native eth0 reconciliation behavior changed; requalify it: %+v", plan)
 	}
-	t.Logf("upstream eth0 discovery limitation remains visible: %+v", plan)
+	t.Logf("native unchanged-topology result: %+v", plan)
 	draftConfig := &core.Config{Prefix: &prefix, Topology: &types.Topology{
 		Defaults: &types.NodeDefinition{Kind: "linux", Image: "alpine:3.20", NetworkMode: "none"},
 		Nodes: map[string]*types.NodeDefinition{

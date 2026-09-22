@@ -170,6 +170,27 @@ network. Native plans can therefore list an already-working `eth0` link in
 automatically apply it. This upstream management-interface assumption still
 needs correction before general live reconciliation can be qualified.
 
+An isolated correction is included in `patches/containerlab-owned-eth0.patch`.
+It uses native endpoint ownership to distinguish data `eth0` from an unmarked
+management interface, in both discovery and namespace parking. Build it without
+altering the host installation or module cache:
+
+```sh
+bash scripts/build-containerlab.sh /absolute/path/containerlab-owned-eth0
+make build
+LABCONTAINERS_CONTAINERLAB=/absolute/path/containerlab-owned-eth0 \
+  LABCONTAINERS_LIVE=1 LABCONTAINERS_RECONCILE_LIVE=1 \
+  go test ./pkg/client -run '^TestLive$' -count=1 -v
+```
+
+The builder verifies the pinned version, runs native link/core tests, and embeds
+the patch digest in the CLI's commit metadata. `LABCONTAINERS_CONTAINERLAB`
+selects an explicit CLI for the child daemon; ordinary launches still use the
+host `containerlab`. The strict live no-op check fails on stock v0.79.0 and passes
+with the correction. No management NIC is added, and no interface is renamed.
+This is a narrow patched dependency, not a replacement topology or VM API;
+upstreaming it and qualifying live application remain outstanding.
+
 ## Python
 
 ```python

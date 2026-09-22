@@ -40,6 +40,17 @@ func TestDoctorRequiresPinnedVersion(t *testing.T) {
 	}
 }
 
+func TestExplicitContainerlabBinaryDoesNotChangeHostDefault(t *testing.T) {
+	t.Setenv("LABCONTAINERS_CONTAINERLAB", "/isolated/containerlab")
+	if got := NewContainerlab().Binary; got != "/isolated/containerlab" {
+		t.Fatalf("explicit native binary = %q", got)
+	}
+	t.Setenv("LABCONTAINERS_CONTAINERLAB", "")
+	if got := NewContainerlab().Binary; got != "containerlab" {
+		t.Fatalf("host default = %q", got)
+	}
+}
+
 func TestReplaceUsesFilteredDestroyThenConvergence(t *testing.T) {
 	f := &fakeRunner{}
 	c := &Containerlab{Runner: f, Binary: "clab"}
