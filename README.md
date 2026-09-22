@@ -326,6 +326,34 @@ on failure; uploads are not atomic. These limits do not provide a large-image
 archive transport. Rebuild the VM wrapper's guest-control binary to apply the
 HTTP boundary checks to existing images.
 
+For larger offline artifacts, use the existing Containerlab bind and vrnetlab
+QEMU passthrough fields. For example, a native `types.NodeDefinition` can attach
+a caller-prepared ISO as a read-only virtio disk:
+
+```go
+vm := &types.NodeDefinition{
+    Kind: "generic_vm", Image: preparedImage, ImagePullPolicy: "Never",
+    NetworkMode: "none",
+    Binds: []string{absoluteISOPath + ":/artifacts.iso:ro"},
+    Env: map[string]string{
+        "QEMU_ADDITIONAL_ARGS": "-drive file=/artifacts.iso,format=raw,if=none,id=artifacts,readonly=on -device virtio-blk-pci,drive=artifacts,serial=lc-artifacts",
+    },
+}
+```
+
+The caller prepares and verifies the media, mounts it inside the guest, and
+copies its contents to the destination expected by the software under test
+(for k0s Linux workers, the explicit data directory's `images` subdirectory).
+No network, download, or automatic import is added by Labcontainers. vrnetlab
+splits `QEMU_ADDITIONAL_ARGS` on whitespace, so the container-side path in that
+argument must not contain spaces. This passthrough is not a sandbox for arbitrary
+QEMU arguments; callers must not add undeclared networking through it.
+`TestLiveReadOnlyArtifactDisk` checks the Linux path with a 257 MiB artifact,
+guest-local copy verification, read-only media, and zero guest NICs. Run it with
+`LABCONTAINERS_ARTIFACT_DISK_IMAGE` set to a prepared Linux QGA wrapper image;
+the host also needs `xorriso`. Windows artifact-media mounting is not covered by
+that test.
+
 For static pods and native multi-document configuration such as kubeadm, call
 `kube.WriteObjects(ctx, node.Commands(), "/explicit/path", 0o600, objects...)`.
 The caller supplies the native objects, GVKs, destination and permissions;
