@@ -19,6 +19,8 @@ jobs:
       - run: python -m unittest discover -s python/tests -v
       - uses: astral-sh/setup-uv@v6
       - run: make generate-containerlab
+      - run: make generate-cloud-init
+      - run: git diff --exit-code -- schemas/cloud-init pkg/cloudinit/networkconfig/zz_generated.go pkg/cloudinit/networkconfig/zz_open_generated.go python/labcontainers/cloudinit_generated.py python/labcontainers/CLOUD-INIT-LICENSE
       - run: git diff --exit-code -- schemas/containerlab python/labcontainers/containerlab_generated.py python/labcontainers/CONTAINERLAB-LICENSE
       - run: python -m py_compile python/labcontainers/*.py images/*/launcher.py
       - run: npm ci

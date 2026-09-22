@@ -7,3 +7,9 @@ configuration types. Python topology bindings are generated from its JSON
 Schema, vendored in schemas/containerlab. The upstream license is included
 there and in Python distributions as labcontainers/CONTAINERLAB-LICENSE.
 Deployment uses the separately installed Containerlab executable.
+
+Cloud-init network bindings are generated from Canonical cloud-init's network
+v2 JSON Schema, vendored in schemas/cloud-init. The original license notice
+(GPLv3 or Apache-2.0) is included there and in Python distributions as
+labcontainers/CLOUD-INIT-LICENSE. These are configuration objects; cloud-init
+itself remains the guest operating system's separately installed component.

@@ -23,4 +23,4 @@ where = ["python"]
 include = ["labcontainers*"]
 
 [tool.setuptools.package-data]
-labcontainers = ["CONTAINERLAB-LICENSE"]
+labcontainers = ["CONTAINERLAB-LICENSE", "CLOUD-INIT-LICENSE"]

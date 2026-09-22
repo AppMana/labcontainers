@@ -1,4 +1,7 @@
-.PHONY: generate generate-containerlab test build
+.PHONY: generate generate-containerlab generate-cloud-init test build
+
+generate-cloud-init:
+	bash scripts/generate-cloud-init.sh
 
 generate-containerlab:
 	bash scripts/generate-containerlab.sh

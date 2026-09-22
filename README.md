@@ -242,6 +242,16 @@ Compatibility change: legacy `Replace`/`ReplaceWithBootstrap` and Python
 one-call remove-and-deploy operation. The raw `REPLACE` lifecycle action has
 the same preparation-only behavior. Callers must add explicit Plan/Apply.
 
+## Guest network bootstrap
+
+Guest network bootstrap is also code-first, independently of Kubernetes:
+`pkg/cloudinit/networkconfig` contains Go types generated from cloud-init's
+network-v2 schema. Construct `NetworkConfigVersion2` and call `WriteFile` at
+the launcher's native bind-file boundary. Python exposes the same schema as
+`labcontainers.cloudinit.models` with `write_network_config(path, config)`.
+Neither writer inserts network defaults. Generation and the small open-field
+codec correction are documented in `schemas/cloud-init/README.md`.
+
 ## Kubernetes helpers
 
 The optional `pkg/kubernetes/kube` package contains the shared bastion-side
