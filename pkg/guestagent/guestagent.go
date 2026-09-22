@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/appmana/labcontainers/internal/transferlimits"
 )
 
 const (
@@ -302,7 +304,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var result Result
 	var input []byte
 	if req.Header.Get("X-Stdin") == "1" {
-		input, err = io.ReadAll(io.LimitReader(req.Body, 64<<20))
+		input, err = io.ReadAll(http.MaxBytesReader(w, req.Body, transferlimits.GuestExecStdin))
 	}
 	if err == nil {
 		guestOS, osErr := s.Agent.OS(ctx)
@@ -325,6 +327,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) servePut(w http.ResponseWriter, req *http.Request) {
+	if req.ContentLength > transferlimits.Upload {
+		http.Error(w, "upload exceeds maximum payload size", http.StatusRequestEntityTooLarge)
+		return
+	}
 	path := req.Header.Get("X-Path")
 	mode, err := strconv.ParseUint(req.Header.Get("X-Mode"), 8, 32)
 	if path == "" || err != nil {
@@ -356,7 +362,7 @@ func (s *Server) servePut(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if err == nil {
-		err = s.Agent.Upload(ctx, io.LimitReader(req.Body, 256<<20), path)
+		err = s.Agent.Upload(ctx, http.MaxBytesReader(w, req.Body, transferlimits.Upload), path)
 	}
 	if err == nil && !isWindowsOS(guestOS) {
 		var changed Result

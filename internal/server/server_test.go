@@ -16,6 +16,8 @@ import (
 	clab "github.com/appmana/labcontainers/pkg/containerlab"
 	"github.com/srl-labs/containerlab/core"
 	"github.com/srl-labs/containerlab/types"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v2"
 )
 
@@ -220,6 +222,50 @@ topology:
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestExecGuestStdinLimitPreservesContainerPassthrough(t *testing.T) {
+	s, backend := testServer(t)
+	source, err := clab.Source(&core.Config{Topology: &types.Topology{
+		Nodes: map[string]*types.NodeDefinition{
+			"vm":        {Kind: "generic_vm", Image: "prepared-vm"},
+			"container": {Kind: "linux", Image: "prepared-container"},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.CreateSession(context.Background(), &labv1.CreateSessionRequest{Spec: &labv1.LabSpec{
+		Topology: source, Nodes: map[string]*labv1.NodeExtension{"vm": {Control: "qga"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := make([]byte, labv1.MaxGuestExecStdinBytes+1)
+	for _, tc := range []struct {
+		node string
+		size int
+		code codes.Code
+	}{
+		{"vm", len(input), codes.InvalidArgument},
+		{"vm", len(input) - 1, codes.OK},
+		{"container", len(input), codes.OK},
+	} {
+		backend.calls = nil
+		_, err := s.Exec(context.Background(), &labv1.ExecRequest{
+			Node: &labv1.NodeRef{SessionId: p.GetId(), Node: tc.node},
+			Argv: []string{"true"}, Stdin: input[:tc.size],
+		})
+		if status.Code(err) != tc.code {
+			t.Fatalf("%s size %d: %v", tc.node, tc.size, err)
+		}
+		if tc.code != codes.OK && len(backend.calls) != 0 {
+			t.Fatalf("rejected input reached backend: %v", backend.calls)
+		}
+		if tc.code == codes.OK && len(backend.calls) != 1 {
+			t.Fatalf("valid input did not reach backend: %v", backend.calls)
+		}
+	}
 }
 
 func TestSessionLifecycleAndFaultRollback(t *testing.T) {

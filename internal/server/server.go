@@ -264,6 +264,9 @@ func (s *Server) Exec(ctx context.Context, req *labv1.ExecRequest) (*labv1.ExecR
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
+	if n.Control == "qga" && len(req.GetStdin()) > labv1.MaxGuestExecStdinBytes {
+		return nil, status.Error(codes.InvalidArgument, "QGA exec stdin exceeds 64 MiB; transfer files explicitly instead")
+	}
 	result, runErr := s.Backend.Exec(ctx, r.Name, n.Name, n.Control, timeout, req.GetStdin(), req.GetArgv())
 	if runErr != nil {
 		return nil, status.Errorf(codes.Internal, "exec: %v", runErr)

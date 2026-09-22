@@ -319,6 +319,13 @@ stdin/file readers for the byte-based transport. The original `node.Exec`,
 request/result fields and call options. No VM, network, or management path is
 created by the adapter.
 
+The current buffered transport accepts files up to 256 MiB and QGA command
+stdin up to 64 MiB. Oversized payloads fail explicitly, rather than silently
+truncating. An unknown-length HTTP upload can leave a partial destination file
+on failure; uploads are not atomic. These limits do not provide a large-image
+archive transport. Rebuild the VM wrapper's guest-control binary to apply the
+HTTP boundary checks to existing images.
+
 For static pods and native multi-document configuration such as kubeadm, call
 `kube.WriteObjects(ctx, node.Commands(), "/explicit/path", 0o600, objects...)`.
 The caller supplies the native objects, GVKs, destination and permissions;
