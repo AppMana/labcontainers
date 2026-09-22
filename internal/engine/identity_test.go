@@ -26,6 +26,24 @@ func TestContainerIdentityRequiresExactlyOneMatch(t *testing.T) {
 	}
 }
 
+func TestLabNamePreflightRejectsAnyExistingContainer(t *testing.T) {
+	for _, output := range []string{"foreign-container\n", "stopped-container\n"} {
+		c := &Containerlab{Runner: identityRunner{output}}
+		if err := c.CheckLabNameAvailable(context.Background(), "existing"); err == nil {
+			t.Fatalf("accepted an occupied lab name: %q", output)
+		}
+	}
+	f := &fakeRunner{}
+	c := &Containerlab{Runner: f}
+	if err := c.CheckLabNameAvailable(context.Background(), "new"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"docker", "ps", "--all", "--no-trunc", "--filter", "label=containerlab=new", "--format", "{{.ID}}"}
+	if !reflect.DeepEqual(f.argv[0], want) {
+		t.Fatalf("preflight must include stopped and unowned containers: %q", f.argv[0])
+	}
+}
+
 func TestVMFaultTargetsNativeEndpointNotGuestDevice(t *testing.T) {
 	f := &fakeRunner{}
 	c := &Containerlab{Runner: f}

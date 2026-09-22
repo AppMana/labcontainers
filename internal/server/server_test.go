@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,9 +20,14 @@ import (
 )
 
 type fakeBackend struct {
-	calls       []string
-	execResults []engine.Result
-	proofNodes  []string
+	nameConflict error
+	calls        []string
+	execResults  []engine.Result
+	proofNodes   []string
+}
+
+func (f *fakeBackend) CheckLabNameAvailable(context.Context, string) error {
+	return f.nameConflict
 }
 
 func (f *fakeBackend) call(value string)                          { f.calls = append(f.calls, value) }
@@ -54,6 +60,30 @@ func TestExternalOptInRetainsIsolationChecks(t *testing.T) {
 	}
 	if !reflect.DeepEqual(backend.proofNodes, []string{"isolated"}) {
 		t.Fatalf("unexpected runtime checks: %v", backend.proofNodes)
+	}
+}
+
+func TestCreateDoesNotReconcileAnExistingForeignLab(t *testing.T) {
+	s, backend := testServer(t)
+	backend.nameConflict = errors.New("name already used by another daemon")
+	source, err := clab.Source(&core.Config{Topology: &types.Topology{
+		Nodes: map[string]*types.NodeDefinition{"n1": {Kind: "linux", Image: "alpine:3.20"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.CreateSession(context.Background(), &labv1.CreateSessionRequest{
+		Spec: &labv1.LabSpec{Name: "existing", Topology: source},
+	})
+	if err == nil || !strings.Contains(err.Error(), "name already used") {
+		t.Fatalf("expected ownership preflight failure, got %v", err)
+	}
+	if !reflect.DeepEqual(backend.calls, []string{"doctor"}) {
+		t.Fatalf("mutated foreign runtime: %v", backend.calls)
+	}
+	records, err := s.Store.List()
+	if err != nil || len(records) != 0 {
+		t.Fatalf("created local session for foreign lab: %v %v", records, err)
 	}
 }
 
