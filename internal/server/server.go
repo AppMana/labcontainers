@@ -20,6 +20,7 @@ import (
 	"github.com/appmana/labcontainers/internal/session"
 	"github.com/appmana/labcontainers/pkg/bootstrap"
 	"github.com/appmana/labcontainers/pkg/spec"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -393,6 +394,7 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	f := &session.Fault{ID: id, Node: req.GetNode(), Interface: req.GetInterface(), Active: true}
+	var apply func() error
 	switch fault := req.GetFault().(type) {
 	case *labv1.ApplyFaultRequest_Netem:
 		if f.Node == "" || f.Interface == "" {
@@ -406,8 +408,8 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 		if err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "resolve netem node: %v", err)
 		}
-		if err := s.Backend.Netem(ctx, container, f.Interface, time.Duration(fault.Netem.GetDelayMillis())*time.Millisecond, time.Duration(fault.Netem.GetJitterMillis())*time.Millisecond, fault.Netem.GetLossPercent(), fault.Netem.GetRateKbit(), fault.Netem.GetCorruptionPercent()); err != nil {
-			return nil, status.Errorf(codes.Internal, "apply netem: %v", err)
+		apply = func() error {
+			return s.Backend.Netem(ctx, container, f.Interface, time.Duration(fault.Netem.GetDelayMillis())*time.Millisecond, time.Duration(fault.Netem.GetJitterMillis())*time.Millisecond, fault.Netem.GetLossPercent(), fault.Netem.GetRateKbit(), fault.Netem.GetCorruptionPercent())
 		}
 	case *labv1.ApplyFaultRequest_LinkState:
 		n := r.Nodes[fault.LinkState.GetNode()]
@@ -425,8 +427,8 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 			return nil, status.Errorf(codes.FailedPrecondition, "observe link state before fault: %v", err)
 		}
 		f.RestoreUp = priorUp
-		if err := s.Backend.SetLink(ctx, r.Name, n.Name, n.Control, f.Interface, fault.LinkState.GetUp()); err != nil {
-			return nil, status.Errorf(codes.Internal, "set link state: %v", err)
+		apply = func() error {
+			return s.Backend.SetLink(ctx, r.Name, n.Name, n.Control, f.Interface, fault.LinkState.GetUp())
 		}
 	case *labv1.ApplyFaultRequest_Partition:
 		return nil, status.Error(codes.Unimplemented, "group partitions require the host bridge filter backend")
@@ -436,6 +438,21 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 	r.Faults[id] = f
 	if err := s.Store.Save(r); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
+	}
+	// Persist the rollback record before touching the network. On an ambiguous
+	// backend failure keep it active: the operation may have partially applied.
+	s.event(r, "fault.prepared", f)
+	if err := apply(); err != nil {
+		s.event(r, "fault.apply_failed", f)
+		failure := status.New(codes.Internal, fmt.Sprintf("apply fault %s failed; rollback record remains active (RevertFault session_id=%s id=%s): %v", id, r.ID, id, err))
+		withDetails, detailErr := failure.WithDetails(&errdetails.ErrorInfo{
+			Reason: "FAULT_APPLY_FAILED", Domain: "labcontainers.appmana.com",
+			Metadata: map[string]string{"session_id": r.ID, "fault_id": id},
+		})
+		if detailErr == nil {
+			failure = withDetails
+		}
+		return nil, failure.Err()
 	}
 	s.event(r, "fault.applied", f)
 	return &labv1.Fault{Id: id, Kind: f.Kind, Active: true}, nil

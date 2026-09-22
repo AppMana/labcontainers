@@ -259,6 +259,15 @@ NIC is needed. A second active link-state fault on the same endpoint is rejected
 until the first is reverted. This prevents ambiguous restoration order. Existing
 netem configuration snapshot/restore remains a separate limitation.
 
+Fault rollback records are saved before network mutation. If application fails
+after that point, the record remains active because backend failure does not
+prove that nothing changed. The gRPC error includes native `google.rpc.ErrorInfo`
+with reason `FAULT_APPLY_FAILED` and `session_id`/`fault_id` metadata. Use those
+identifiers with the generated `RevertFault` RPC; no state-file editing is
+needed. `fault.prepared` and `fault.apply_failed` events distinguish this case
+from a successfully applied fault. Reconciliation remains blocked until active
+faults have been reverted.
+
 ## Kubernetes helpers
 
 The optional `pkg/kubernetes/kube` package contains the shared bastion-side
