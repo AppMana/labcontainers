@@ -46,6 +46,7 @@ type Backend interface {
 	Exec(context.Context, string, string, string, time.Duration, []byte, []string) (engine.Result, error)
 	Put(context.Context, string, string, string, string, uint32, []byte) error
 	SetLink(context.Context, string, string, string, string, bool) error
+	LinkUp(context.Context, string, string, string, string) (bool, error)
 	Netem(context.Context, string, string, time.Duration, time.Duration, float64, uint64, float64) error
 	ResetNetem(context.Context, string, string) error
 }
@@ -413,7 +414,17 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 		if n == nil || fault.LinkState.GetInterface() == "" {
 			return nil, status.Error(codes.InvalidArgument, "link state requires a known node and interface")
 		}
-		f.Kind, f.Node, f.Interface, f.RestoreUp = "link-state", n.Name, fault.LinkState.GetInterface(), !fault.LinkState.GetUp()
+		f.Kind, f.Node, f.Interface = "link-state", n.Name, fault.LinkState.GetInterface()
+		for _, existing := range r.Faults {
+			if existing.Active && existing.Kind == f.Kind && existing.Node == f.Node && existing.Interface == f.Interface {
+				return nil, status.Error(codes.FailedPrecondition, "revert the active link-state fault on this endpoint before applying another")
+			}
+		}
+		priorUp, err := s.Backend.LinkUp(ctx, r.Name, n.Name, n.Control, f.Interface)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "observe link state before fault: %v", err)
+		}
+		f.RestoreUp = priorUp
 		if err := s.Backend.SetLink(ctx, r.Name, n.Name, n.Control, f.Interface, fault.LinkState.GetUp()); err != nil {
 			return nil, status.Errorf(codes.Internal, "set link state: %v", err)
 		}

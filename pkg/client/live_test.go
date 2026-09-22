@@ -272,6 +272,24 @@ func TestLive(t *testing.T) {
 	if result.GetExitCode() != 0 {
 		t.Fatalf("reachability not restored: %s", result.GetStderr())
 	}
+	// Reverting a no-op down request must not bring a previously-down cable up.
+	if _, err := commands.Exec(ctx, "ip", "link", "set", "eth0", "down"); err != nil {
+		t.Fatal(err)
+	}
+	alreadyDown, err := lab.SetLink(ctx, "client", "eth0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alreadyDown.Revert(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "1", "192.0.2.2")
+	if err != nil || result.GetExitCode() == 0 {
+		t.Fatalf("rollback enabled a previously-down link: %v %v", result, err)
+	}
+	if _, err := commands.Exec(ctx, "ip", "link", "set", "eth0", "up"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestLiveVM proves the generic_vm/QGA boundary, attached-disk persistence,

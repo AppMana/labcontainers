@@ -252,6 +252,13 @@ the launcher's native bind-file boundary. Python exposes the same schema as
 Neither writer inserts network defaults. Generation and the small open-field
 codec correction are documented in `schemas/cloud-init/README.md`.
 
+Link-state fault rollback restores the endpoint's observed administrative UP
+state, not the opposite of the requested fault. Observation reads the Linux
+wrapper's native sysfs flags, including for Windows guests; no guest management
+NIC is needed. A second active link-state fault on the same endpoint is rejected
+until the first is reverted. This prevents ambiguous restoration order. Existing
+netem configuration snapshot/restore remains a separate limitation.
+
 ## Kubernetes helpers
 
 The optional `pkg/kubernetes/kube` package contains the shared bastion-side

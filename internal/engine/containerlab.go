@@ -279,6 +279,27 @@ func (c *Containerlab) Put(ctx context.Context, lab, node, control, path string,
 	return nil
 }
 
+// LinkUp observes the administrative state of the native topology endpoint,
+// including a VM wrapper endpoint. Carrier/operstate is not administrative UP.
+func (c *Containerlab) LinkUp(ctx context.Context, lab, node, _ string, iface string) (bool, error) {
+	if iface == "" || iface == "." || iface == ".." || strings.ContainsAny(iface, "/\x00") {
+		return false, fmt.Errorf("invalid native interface name %q", iface)
+	}
+	argv := []string{"cat", "/sys/class/net/" + iface + "/flags"}
+	r, err := c.Exec(ctx, lab, node, "container", 30*time.Second, nil, argv)
+	if err != nil {
+		return false, err
+	}
+	if r.ExitCode != 0 {
+		return false, &CommandError{Argv: argv, Result: r}
+	}
+	flags, err := strconv.ParseUint(strings.TrimSpace(string(r.Stdout)), 0, 32)
+	if err != nil {
+		return false, fmt.Errorf("read native link state: %w", err)
+	}
+	return flags&1 != 0, nil // Linux IFF_UP; not carrier state (IFF_RUNNING).
+}
+
 func (c *Containerlab) SetLink(ctx context.Context, lab, node, _ string, iface string, up bool) error {
 	state := "down"
 	if up {

@@ -20,6 +20,8 @@ import (
 )
 
 type fakeBackend struct {
+	linkUp       map[string]bool
+	linkReadErr  error
 	runtimeErr   error
 	nameConflict error
 	calls        []string
@@ -161,7 +163,20 @@ func (f *fakeBackend) Put(_ context.Context, _, node, _, path string, _ uint32, 
 }
 func (f *fakeBackend) SetLink(_ context.Context, _, node, _, iface string, up bool) error {
 	f.call("link:" + node + ":" + iface + ":" + map[bool]string{true: "up", false: "down"}[up])
+	if f.linkUp == nil {
+		f.linkUp = map[string]bool{}
+	}
+	f.linkUp[node+":"+iface] = up
 	return nil
+}
+func (f *fakeBackend) LinkUp(_ context.Context, _, node, _, iface string) (bool, error) {
+	if f.linkReadErr != nil {
+		return false, f.linkReadErr
+	}
+	if up, ok := f.linkUp[node+":"+iface]; ok {
+		return up, nil
+	}
+	return true, nil
 }
 func (f *fakeBackend) Netem(_ context.Context, node, iface string, _ time.Duration, _ time.Duration, _ float64, _ uint64, _ float64) error {
 	f.call("netem:" + node + ":" + iface)
