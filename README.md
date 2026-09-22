@@ -5,6 +5,20 @@ lifecycle action. It resolves one running container using topology and node
 labels and sends SIGKILL, killing its QEMU process without guest shutdown.
 Attached disks persist. `PowerOff()` retains Containerlab stop semantics.
 
+VM teardown can recreate Containerlab veth links. Labcontainers journals Linux
+peer-container bridge memberships before crash/stop/restart/replacement and
+restores them before `Start` returns, so a caller does not need to reconnect
+the switch port. Recovery is restricted to the same running, session-owned
+peer container IDs; missing peers or failed reattachment fail the operation
+and retain its retry journal. This preserves bridge membership, not arbitrary
+port configuration such as VLAN filters, qdiscs, or routes, nor configuration
+inside a replaced switch. Host bridges are not modified by this recovery.
+The current journal includes all bridge members on surviving Linux peers:
+overlapping multi-node outages may require starting both nodes and retrying
+the first failed `Start` once both cables exist. A peer replacement can also
+block an outstanding journal. These cases fail closed; simultaneous recovery
+without retries is not yet qualified.
+
 Timelines accept `wait_exec`: a bounded guest predicate with an expected exit
 code and optional stdout/stderr substring matches. A match permits the next
 action; timeout aborts the timeline. Ordinary timeline `exec` now aborts on
@@ -19,6 +33,12 @@ test on a dedicated runner labelled `self-hosted`, `linux`, `x64`, `kvm`, and
 image's `repository@sha256:...` reference. For local reproduction run `make build`
 and `LABCONTAINERS_WINDOWS_LIVE=1 go test ./pkg/client -run '^TestLiveWindows$' -v -count=1 -timeout=18m`.
 The ordinary unit suite skips this privileged runtime test.
+
+The same workflow runs the Linux VM bridge-restart regression with a preloaded
+`LABCONTAINERS_VM_IMAGE` Actions variable (`repository@sha256:...`). Locally:
+`make build` then `LABCONTAINERS_VM_LIVE=1 go test ./pkg/client -run '^TestLiveVMCrashRestoresRuntimeBridgeMembership$' -v -count=1 -timeout=12m`.
+`LABCONTAINERS_VM_IMAGE` can override the local Ubuntu image and
+`LABCONTAINERS_LABD` can select a previously built daemon for RED/GREEN testing.
 
 Labcontainers is a Testcontainers-style API for isolated container and virtual
 machine test networks. It keeps Containerlab as the topology and dataplane

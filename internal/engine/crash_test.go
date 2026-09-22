@@ -9,7 +9,7 @@ import (
 func TestCrashKillsOnlyResolvedTopologyNode(t *testing.T) {
 	f := &fakeRunner{result: Result{Stdout: []byte("specific-container-id\n")}}
 	c := &Containerlab{Runner: f}
-	if err := c.Lifecycle(context.Background(), "/tmp/session/topology.yml", "vm", "crash"); err != nil {
+	if err := c.crash(context.Background(), "/tmp/session/topology.yml", "vm"); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{

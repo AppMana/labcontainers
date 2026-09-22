@@ -40,7 +40,11 @@ func TestReplaceUsesFilteredDestroyThenConvergence(t *testing.T) {
 	if err := c.Replace(context.Background(), "lab.clab.yml", "n1"); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"clab", "destroy", "--topo", "lab.clab.yml", "--node-filter", "n1"}, {"clab", "deploy", "--topo", "lab.clab.yml", "--format", "json"}}
+	want := [][]string{
+		{"docker", "ps", "--no-trunc", "--filter", "label=clab-topo-file=lab.clab.yml", "--filter", "label=clab-node-kind=linux", "--format", "{{.ID}}\t{{.Label \"clab-node-name\"}}"},
+		{"clab", "destroy", "--topo", "lab.clab.yml", "--node-filter", "n1"},
+		{"clab", "deploy", "--topo", "lab.clab.yml", "--format", "json"},
+	}
 	if !reflect.DeepEqual(f.argv, want) {
 		t.Fatalf("commands = %#v, want %#v", f.argv, want)
 	}

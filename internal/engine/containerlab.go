@@ -150,6 +150,12 @@ func (c *Containerlab) Destroy(ctx context.Context, topology string) error {
 }
 
 func (c *Containerlab) Lifecycle(ctx context.Context, topology, node, action string) error {
+	switch action {
+	case "crash", "stop", "restart":
+		if err := c.saveAttachments(ctx, topology, node); err != nil {
+			return fmt.Errorf("preserve peer attachments: %w", err)
+		}
+	}
 	if action == "crash" {
 		return c.crash(ctx, topology, node)
 	}
@@ -169,16 +175,25 @@ func (c *Containerlab) Lifecycle(ctx context.Context, topology, node, action str
 	if deployErr != nil && lifecycleErr != nil {
 		return errors.Join(lifecycleErr, deployErr)
 	}
-	return deployErr
+	if deployErr != nil {
+		return deployErr
+	}
+	return c.restoreAttachments(ctx, topology, node)
 }
 
 // Replace removes one node, then lets Containerlab's convergent full deploy restore that node and
 // all of its links without perturbing healthy nodes.
 func (c *Containerlab) Replace(ctx context.Context, topology, node string) error {
+	if err := c.saveAttachments(ctx, topology, node); err != nil {
+		return err
+	}
 	if _, err := c.run(ctx, nil, "destroy", "--topo", topology, "--node-filter", node); err != nil {
 		return err
 	}
-	return c.Deploy(ctx, topology)
+	if err := c.Deploy(ctx, topology); err != nil {
+		return err
+	}
+	return c.restoreAttachments(ctx, topology, node)
 }
 
 func (c *Containerlab) Exec(ctx context.Context, lab, node, control string, timeout time.Duration, stdin []byte, argv []string) (Result, error) {
