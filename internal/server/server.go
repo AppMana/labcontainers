@@ -220,6 +220,9 @@ func (s *Server) DestroySession(ctx context.Context, req *labv1.DestroySessionRe
 	if req.GetResumeToken() != "" && req.GetResumeToken() != r.ResumeToken {
 		return nil, status.Error(codes.PermissionDenied, "invalid resume token")
 	}
+	if req.GetPreserveKept() && r.Kept {
+		return &labv1.Empty{}, nil
+	}
 	if err := s.Backend.Destroy(ctx, r.TopologyPath); err != nil {
 		return nil, status.Errorf(codes.Internal, "destroy session: %v", err)
 	}

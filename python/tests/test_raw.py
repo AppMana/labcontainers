@@ -1,10 +1,31 @@
 import unittest
+import pathlib
+import tempfile
+from unittest.mock import Mock
 
 from labcontainers import Client, api
 from labcontainers.client import Session
 
 
 class RawTransportTests(unittest.TestCase):
+    def test_close_preserves_remaining_private_state(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = pathlib.Path(root) / "state"
+            (state / "sessions" / "kept").mkdir(parents=True)
+            client = Client.__new__(Client)
+            client._state_dir = str(state)
+            client._directory = root
+            client._sessions = {"kept": "token"}
+            client._rpc = Mock()
+            client._channel = Mock()
+            client._process = Mock()
+            client.close()
+            self.assertTrue((state / "sessions" / "kept").exists())
+            request = client._rpc.DestroySession.call_args.args[0]
+            self.assertTrue(request.preserve_kept)
+            client._process.terminate.assert_called_once()
+            client._process.kill.assert_not_called()
+
     def test_replacement_only_requests_preparation(self):
         class Transport:
             def __init__(self):

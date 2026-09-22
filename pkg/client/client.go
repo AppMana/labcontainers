@@ -9,13 +9,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
 	"github.com/srl-labs/containerlab/core"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 type Options struct {
@@ -29,6 +32,7 @@ type Client struct {
 	rpc      labv1.LabcontainersClient
 	cmd      *exec.Cmd
 	tempDir  string
+	stateDir string
 	mu       sync.Mutex
 	sessions map[string]string
 }
@@ -74,7 +78,7 @@ func Launch(ctx context.Context, opts Options) (*Client, error) {
 		}
 		return nil, err
 	}
-	c.cmd, c.tempDir = cmd, tempDir
+	c.cmd, c.tempDir, c.stateDir = cmd, tempDir, opts.StateDir
 	return c, nil
 }
 
@@ -153,7 +157,7 @@ func (c *Client) Close() error {
 	defer cancel()
 	var first error
 	for id, token := range sessions {
-		if _, err := c.rpc.DestroySession(ctx, &labv1.DestroySessionRequest{Id: id, ResumeToken: token}); err != nil && first == nil {
+		if _, err := c.rpc.DestroySession(ctx, &labv1.DestroySessionRequest{Id: id, ResumeToken: token, PreserveKept: true}); err != nil && status.Code(err) != codes.NotFound && first == nil {
 			first = err
 		}
 	}
@@ -161,9 +165,16 @@ func (c *Client) Close() error {
 		first = err
 	}
 	if c.cmd != nil {
+		// Surviving records include kept sessions and failed cleanup. Preserve
+		// their disk/bootstrap paths and let labd enforce their leases after
+		// detaching from this owner. Never delete uncertain runtime state.
+		retain := retainState(c.stateDir)
 		_ = c.cmd.Process.Signal(os.Interrupt)
 		done := make(chan error, 1)
 		go func() { done <- c.cmd.Wait() }()
+		if retain {
+			return first
+		}
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
@@ -176,6 +187,22 @@ func (c *Client) Close() error {
 	}
 	return first
 }
+
+func retainState(root string) bool {
+	if root == "" {
+		return true
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "sessions"))
+	return err != nil || len(entries) != 0
+}
+
+// Socket is the local control endpoint. Save it before closing a client whose
+// kept session will be inspected through Dial while its lease remains active.
+func (c *Client) Socket() string { return strings.TrimPrefix(c.conn.Target(), "unix://") }
+
+// StateDirectory is the child daemon's configured state root. It can be reused
+// in Options after an explicit daemon stop; kept files must not be relocated.
+func (c *Client) StateDirectory() string { return c.stateDir }
 
 type Session struct {
 	client *Client

@@ -6,6 +6,7 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import threading
 from typing import Iterable
 
 import grpc
@@ -28,6 +29,7 @@ class Client:
         self.socket = socket or str(pathlib.Path(self._directory) / "labd.sock")
         if state_dir is None and self._directory is not None:
             state_dir = str(pathlib.Path(self._directory) / "state")
+        self._state_dir = state_dir
         argv = [labd, "--socket", self.socket, "--parent-pid", str(os.getpid())]
         if state_dir:
             argv += ["--state-dir", state_dir]
@@ -42,6 +44,7 @@ class Client:
         self = cls.__new__(cls)
         self._temporary = False
         self._directory = None
+        self._state_dir = None
         self.socket = socket
         self._process = None
         self._channel = grpc.insecure_channel("unix://" + socket, options=_GRPC_OPTIONS)
@@ -60,6 +63,11 @@ class Client:
         """Full transport API, including request fields and gRPC call options."""
         return self._rpc
 
+    @property
+    def state_directory(self) -> str | None:
+        """Child daemon state root; retain this path when keeping a lab."""
+        return self._state_dir
+
     def resume(self, session_id: str) -> Session:
         value = self._rpc.GetSession(pb.SessionRef(id=session_id))
         self._sessions[value.id] = value.resume_token
@@ -69,15 +77,29 @@ class Client:
         error: Exception | None = None
         for session_id, token in list(self._sessions.items()):
             try:
-                self._rpc.DestroySession(pb.DestroySessionRequest(id=session_id, resume_token=token), timeout=120)
+                self._rpc.DestroySession(pb.DestroySessionRequest(id=session_id, resume_token=token, preserve_kept=True), timeout=120)
             except Exception as exc:
-                if error is None:
+                expired = isinstance(exc, grpc.RpcError) and exc.code() == grpc.StatusCode.NOT_FOUND
+                if error is None and not expired:
                     error = exc
             finally:
                 self._sessions.pop(session_id, None)
         self._channel.close()
         if self._process is not None:
+            # Keep paths stable while the detached daemon owns retained leases.
+            # Treat unreadable state as retained, not safe to erase.
+            retain = True
+            if self._state_dir:
+                try:
+                    retain = any((pathlib.Path(self._state_dir) / "sessions").iterdir())
+                except OSError:
+                    pass
             self._process.terminate()
+            if retain:
+                threading.Thread(target=self._process.wait, daemon=True).start()
+                if error is not None:
+                    raise error
+                return
             try:
                 self._process.wait(timeout=120)
             except subprocess.TimeoutExpired:

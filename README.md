@@ -351,9 +351,23 @@ and event log, including timeline failures; they are user-private because a
 topology can contain credentials. They are not a complete guest log capture.
 Remove retained evidence explicitly when it is no longer needed.
 
-For now, keeping a session still requires an explicitly persistent state
-directory; the default private client's temporary directory is removed on
-close. Keep-on-failure lease handling is not yet complete.
+Kept sessions preserve their original state/disk/bootstrap paths even with a
+default private client. On owner close or exit, the child daemon cleans unkept
+sessions, stays available for inspection, and periodically reaps expired leases.
+Save `Client.Socket()` and `Client.StateDirectory()` in Go (`client.socket` and
+`client.state_directory` in Python; `socket`/`stateDirectory` in JavaScript).
+Reconnect with `Dial`/`dial` while the kept lease is active. Do not launch a
+second daemon on a live daemon's socket/state directory. Explicit session
+destruction still overrides a keep; automatic owner cleanup does not, including
+keeps issued through the raw RPC API.
+
+An explicit second termination signal stops a detached daemon without erasing
+kept records; restart it with the same state directory to resume cleanup. A
+daemon crash or host reboot cannot enforce leases until it is restarted.
+Use an explicitly persistent state directory for retention across host reboot;
+default private directories are in the host's temporary directory. Empty private
+directory shells can remain after detached lease expiry; session disks and
+runtime resources are removed, while diagnostic artifacts remain separately.
 
 ## VM nodes
 

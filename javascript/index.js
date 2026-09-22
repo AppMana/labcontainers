@@ -60,6 +60,7 @@ class Client {
       const client = await Client.dial(socket);
       client.process = daemon;
       client.temporaryDirectory = temporaryDirectory;
+      client.stateDirectory = stateDir;
       return client;
     } catch (error) {
       daemon.kill("SIGKILL");
@@ -84,15 +85,25 @@ class Client {
     let firstError;
     for (const [id, resumeToken] of this.sessions) {
       try {
-        await unary(this.rpc, "destroySession", {id, resumeToken}, {deadline: Date.now() + 120000});
+        await unary(this.rpc, "destroySession", {id, resumeToken, preserveKept: true}, {deadline: Date.now() + 120000});
       } catch (error) {
-        firstError ||= error;
+        if (error.code !== grpc.status.NOT_FOUND) firstError ||= error;
       }
     }
     this.sessions.clear();
     this.rpc.close();
     if (this.process) {
+      let retain = true;
+      if (this.stateDirectory) {
+        try { retain = fs.readdirSync(path.join(this.stateDirectory, "sessions")).length !== 0; }
+        catch (_) { /* Uncertain state must not be erased. */ }
+      }
       this.process.kill("SIGINT");
+      if (retain) {
+        this.process.unref();
+        if (firstError) throw firstError;
+        return;
+      }
       await new Promise(resolve => {
         const timer = setTimeout(() => { this.process.kill("SIGKILL"); resolve(); }, 10000);
         this.process.once("exit", () => { clearTimeout(timer); resolve(); });
@@ -142,7 +153,9 @@ class Node {
   powerOff() { return this.lifecycle("POWER_OFF"); }
   start() { return this.lifecycle("START"); }
   restart() { return this.lifecycle("RESTART"); }
-  replace(bootstrap) { return this.lifecycle("REPLACE", bootstrap); }
+  prepareReplacement(bootstrap) { return this.lifecycle("REPLACE", bootstrap); }
+  // Deprecated: preparation only; follow with explicit native Plan/Apply.
+  replace(bootstrap) { return this.prepareReplacement(bootstrap); }
 }
 
 class Fault {

@@ -101,6 +101,9 @@ message Session {
 message DestroySessionRequest {
   string id = 1;
   string resume_token = 2;
+  // Automatic owner cleanup leaves an explicitly kept session to its lease.
+  // Explicit destruction leaves this false.
+  bool preserve_kept = 3;
 }
 
 message KeepSessionRequest {

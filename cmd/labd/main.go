@@ -77,20 +77,57 @@ func run(socket, stateDir string, parentPID int) error {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(stop)
 	parentGone := make(chan struct{}, 1)
 	if parentPID > 0 {
 		go watchParent(parentPID, parentGone)
 	}
-	select {
-	case err := <-done:
-		return err
-	case <-stop:
-	case <-parentGone:
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	detached := false
+	for {
+		ownerCleanup := false
+		select {
+		case err := <-done:
+			return err
+		case <-stop:
+			if detached {
+				// An explicit second signal stops an already detached daemon.
+				// Session records remain recoverable by another daemon.
+				grpcServer.GracefulStop()
+				return nil
+			}
+			detached = true
+			ownerCleanup = true
+			parentGone = nil
+		case <-parentGone:
+			detached = true
+			ownerCleanup = true
+			parentGone = nil
+		case <-ticker.C:
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if ownerCleanup {
+			if err := service.CleanupUnkept(cleanupCtx); err != nil {
+				fmt.Fprintln(os.Stderr, "labd: owner cleanup:", err)
+			}
+		}
+		if err := service.Scavenge(cleanupCtx, time.Now().UTC()); err != nil {
+			fmt.Fprintln(os.Stderr, "labd: lease cleanup:", err)
+		}
+		cleanupCancel()
+		if detached {
+			records, err := store.List()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "labd: retained state:", err)
+				continue
+			}
+			if len(records) == 0 {
+				grpcServer.GracefulStop()
+				return nil
+			}
+		}
 	}
-	grpcServer.GracefulStop()
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cleanupCancel()
-	return service.CleanupUnkept(cleanupCtx)
 }
 
 func watchParent(pid int, gone chan<- struct{}) {
