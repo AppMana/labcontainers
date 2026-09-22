@@ -1,6 +1,6 @@
 {
   "name": "@appmana/labcontainers",
-  "version": "0.2.0-alpha.1",
+  "version": "0.2.0-alpha.2",
   "description": "Testcontainers-style isolated network and VM test labs",
   "license": "Apache-2.0",
   "repository": {

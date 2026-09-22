@@ -7,8 +7,13 @@ Get-AppxPackage -AllUsers -Name Microsoft.MicrosoftEdge.Stable -ErrorAction Sile
 Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force C:\Windows\SoftwareDistribution\Download\* -ErrorAction SilentlyContinue
 Clear-RecycleBin -Force -ErrorAction SilentlyContinue
-Get-ChildItem C:\Windows\Temp -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Get-ChildItem $env:TEMP -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# Packer sources its generated environment script again while invoking the
+# shutdown command, so preserve its files until the communicator is gone.
+@('C:\Windows\Temp', $env:TEMP) | Select-Object -Unique | ForEach-Object {
+  Get-ChildItem $_ -Force -ErrorAction SilentlyContinue |
+    Where-Object Name -NotLike 'packer-*' |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
 Optimize-Volume -DriveLetter C -ReTrim -Verbose
 Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name DefaultPassword -ErrorAction SilentlyContinue
 Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name AutoAdminLogon -Value '0'

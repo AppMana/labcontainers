@@ -43,8 +43,8 @@ are rejected, and `mgmt.skip-when-unused` is added to the private topology.
 Install the daemon and diagnostic CLI once for all language SDKs:
 
 ```sh
-go install github.com/appmana/labcontainers/cmd/labd@v0.2.0-alpha.1
-go install github.com/appmana/labcontainers/cmd/labctl@v0.2.0-alpha.1
+go install github.com/appmana/labcontainers/cmd/labd@v0.2.0-alpha.2
+go install github.com/appmana/labcontainers/cmd/labctl@v0.2.0-alpha.2
 ```
 
 `labd` must be on `PATH`, or its path can be passed as Go's `LabdPath`,
@@ -83,7 +83,7 @@ with Client() as client:
 Python can be installed directly from a Git checkout:
 
 ```sh
-python -m pip install 'git+https://github.com/AppMana/labcontainers.git@v0.2.0-alpha.1'
+python -m pip install 'git+https://github.com/AppMana/labcontainers.git@v0.2.0-alpha.2'
 ```
 
 ## Node.js
@@ -107,7 +107,7 @@ try {
 The npm package is also Git-installable without a publish step:
 
 ```sh
-npm install 'git+https://github.com/AppMana/labcontainers.git#v0.2.0-alpha.1'
+npm install 'git+https://github.com/AppMana/labcontainers.git#v0.2.0-alpha.2'
 ```
 
 Use `session.keep()` only for debugging. It returns a resume token in the raw
