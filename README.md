@@ -222,11 +222,19 @@ Use `session.keep()` only for debugging. It returns a resume token in the raw
 API and extends the session lease; ordinary test sessions are destroyed when
 their owning SDK closes or dies.
 
-For now, keeping a session requires an explicitly persistent state directory;
-the default private client's temporary directory is removed on close. Set an
-explicit `LabSpec.artifact_directory` outside that temporary directory to retain
-evidence. Automatic retained evidence and keep-on-failure lease handling are
-not yet complete.
+Evidence is retained by default under the OS user cache directory at
+`labcontainers/artifacts/<session-id>` (on Linux, `$XDG_CACHE_HOME` or
+`~/.cache`). `Session.Artifacts()` or the generated session's
+`artifact_directory` field gives the actual path. Set `LabSpec.artifact_directory`
+to choose a different location. Cleanup removes runtime state and attached test
+disks, not this evidence. Retained files include the prepared native topology
+and event log, including timeline failures; they are user-private because a
+topology can contain credentials. They are not a complete guest log capture.
+Remove retained evidence explicitly when it is no longer needed.
+
+For now, keeping a session still requires an explicitly persistent state
+directory; the default private client's temporary directory is removed on
+close. Keep-on-failure lease handling is not yet complete.
 
 ## VM nodes
 

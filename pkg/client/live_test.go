@@ -31,9 +31,18 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var evidence string
 	defer func() {
 		if err := c.Close(); err != nil {
 			t.Errorf("close: %v", err)
+		}
+		if evidence != "" {
+			for _, file := range []string{"events.jsonl", "topology.clab.yml"} {
+				if _, err := os.Stat(filepath.Join(evidence, file)); err != nil {
+					t.Errorf("evidence lost after client close: %v", err)
+				}
+			}
+			t.Logf("retained evidence: %s", evidence)
 		}
 	}()
 	prefix := "native-sdk"
@@ -52,6 +61,7 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	evidence = lab.Artifacts()
 	result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 	if err != nil {
 		t.Fatal(err)

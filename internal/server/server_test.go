@@ -158,6 +158,7 @@ func (f *fakeBackend) ResetNetem(_ context.Context, node, iface string) error {
 
 func testServer(t *testing.T) (*Server, *fakeBackend) {
 	t.Helper()
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

@@ -22,6 +22,7 @@ import (
 	"github.com/appmana/labcontainers/pkg/spec"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const defaultTTL = 2 * time.Hour
@@ -126,9 +127,9 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 	if err := s.Backend.CheckLabNameAvailable(ctx, name); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "lab name preflight: %v", err)
 	}
-	artifacts := filepath.Join(dir, "artifacts")
-	if requested := req.GetSpec().GetArtifactDirectory(); requested != "" {
-		artifacts = requested
+	artifacts, err := artifactDirectory(req.GetSpec().GetArtifactDirectory(), id)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	record := &session.Record{
 		ID: id, Name: prepared.Name, State: "provisioning",
@@ -162,23 +163,29 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 	if err := os.WriteFile(record.TopologyPath, prepared.YAML, 0o600); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	if err := os.WriteFile(filepath.Join(artifacts, "topology.clab.yml"), prepared.YAML, 0o600); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 	s.event(record, "session.prepared", map[string]any{"nodes": prepared.Nodes})
 	if err := s.Backend.Validate(ctx, record.TopologyPath); err != nil {
 		record.State = "failed"
 		_ = s.Store.Save(record)
-		return nil, status.Errorf(codes.InvalidArgument, "Containerlab validation failed for session %s: %v", id, err)
+		s.event(record, "session.failed", map[string]any{"stage": "validate", "error": err.Error()})
+		return nil, status.Errorf(codes.InvalidArgument, "Containerlab validation failed for session %s (evidence: %s): %v", id, artifacts, err)
 	}
 	if err := s.Backend.Deploy(ctx, record.TopologyPath); err != nil {
 		record.State = "failed"
 		_ = s.Store.Save(record)
+		s.event(record, "session.failed", map[string]any{"stage": "deploy", "error": err.Error()})
 		_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
-		return nil, status.Errorf(codes.Internal, "deploy session %s: %v", id, err)
+		return nil, status.Errorf(codes.Internal, "deploy session %s (evidence: %s): %v", id, artifacts, err)
 	}
 	if err := s.Backend.ProofIsolation(ctx, record.Name, prepared.IsolatedNodes); err != nil {
 		record.State = "failed"
 		_ = s.Store.Save(record)
+		s.event(record, "session.failed", map[string]any{"stage": "isolation", "error": err.Error()})
 		_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
-		return nil, status.Errorf(codes.FailedPrecondition, "isolation proof failed for session %s: %v", id, err)
+		return nil, status.Errorf(codes.FailedPrecondition, "isolation proof failed for session %s (evidence: %s): %v", id, artifacts, err)
 	}
 	record.State = "running"
 	for _, node := range record.Nodes {
@@ -426,6 +433,8 @@ func (s *Server) revertFault(ctx context.Context, sessionID, faultID string) err
 }
 
 func (s *Server) RunTimeline(ctx context.Context, req *labv1.RunTimelineRequest) (*labv1.TimelineResult, error) {
+	// Session scoping must not mutate caller-owned action objects.
+	req = proto.Clone(req).(*labv1.RunTimelineRequest)
 	started := time.Now()
 	created := make([]string, 0)
 	rollback := func() {
@@ -473,6 +482,9 @@ func (s *Server) RunTimeline(ctx context.Context, req *labv1.RunTimelineRequest)
 			err = status.Error(codes.InvalidArgument, "timeline action is required")
 		}
 		if err != nil {
+			if r, loadErr := s.record(req.GetSessionId()); loadErr == nil {
+				s.event(r, "timeline.failed", map[string]any{"action": i, "error": err.Error()})
+			}
 			rollback()
 			return nil, status.Errorf(codes.Aborted, "timeline action %d: %v", i, err)
 		}
@@ -497,11 +509,16 @@ func (s *Server) waitExec(ctx context.Context, sessionID string, wait *labv1.Wai
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	execRequest := wait.GetExec()
+	execRequest := proto.Clone(wait.GetExec()).(*labv1.ExecRequest)
 	execRequest.Node.SessionId = sessionID
-	var last string
+	last := "no completed attempt"
 	for {
 		result, err := s.Exec(waitCtx, execRequest)
+		if waitCtx.Err() != nil {
+			// A process killed by the overall deadline often has exit=-1 and
+			// empty output. Preserve the preceding diagnostic instead.
+			return status.Errorf(codes.DeadlineExceeded, "wait_exec predicate not satisfied: %s", last)
+		}
 		if err == nil {
 			last = fmt.Sprintf("exit=%d stdout=%q stderr=%q", result.GetExitCode(), result.GetStdout(), result.GetStderr())
 			if result.GetExitCode() == wait.GetExpectedExitCode() &&
@@ -526,6 +543,8 @@ func (s *Server) waitExec(ctx context.Context, sessionID string, wait *labv1.Wai
 }
 
 func (s *Server) Scavenge(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	records, err := s.Store.List()
 	if err != nil {
 		return err
@@ -539,6 +558,7 @@ func (s *Server) Scavenge(ctx context.Context, now time.Time) error {
 			errs = append(errs, fmt.Errorf("%s: %w", r.ID, err))
 			continue
 		}
+		s.event(r, "session.expired", nil)
 		if err := s.Store.Delete(r.ID); err != nil {
 			errs = append(errs, err)
 		}
@@ -547,6 +567,8 @@ func (s *Server) Scavenge(ctx context.Context, now time.Time) error {
 }
 
 func (s *Server) CleanupUnkept(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	records, err := s.Store.List()
 	if err != nil {
 		return err
@@ -560,6 +582,7 @@ func (s *Server) CleanupUnkept(ctx context.Context) error {
 			errs = append(errs, err)
 			continue
 		}
+		s.event(r, "session.destroyed", map[string]any{"reason": "owner exited"})
 		if err := s.Store.Delete(r.ID); err != nil {
 			errs = append(errs, err)
 		}
