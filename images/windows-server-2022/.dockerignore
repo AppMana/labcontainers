@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!launcher.py
+!labcontainers-guest
+!windows-server-2022-labcontainers.qcow2

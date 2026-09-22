@@ -46,6 +46,34 @@ func TestReplaceUsesFilteredDestroyThenConvergence(t *testing.T) {
 	}
 }
 
+func TestStartConvergesAfterGenericVMWasAutoRemoved(t *testing.T) {
+	f := &fakeRunner{}
+	c := &Containerlab{Runner: f, Binary: "clab"}
+	if err := c.Lifecycle(context.Background(), "lab.clab.yml", "n1", "start"); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"clab", "start", "--topo", "lab.clab.yml", "--node", "n1"}, {"clab", "deploy", "--topo", "lab.clab.yml", "--format", "json"}}
+	if !reflect.DeepEqual(f.argv, want) {
+		t.Fatalf("commands = %#v, want %#v", f.argv, want)
+	}
+}
+
+func TestDestroyRemovesOnlyContainersOwnedByTopology(t *testing.T) {
+	f := &fakeRunner{result: Result{Stdout: []byte("vm-id\npeer-id\n")}}
+	c := &Containerlab{Runner: f, Binary: "clab"}
+	if err := c.Destroy(context.Background(), "/tmp/session/topology.clab.yml"); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"clab", "destroy", "--topo", "/tmp/session/topology.clab.yml", "--cleanup"},
+		{"docker", "ps", "-aq", "--filter", "label=clab-topo-file=/tmp/session/topology.clab.yml"},
+		{"docker", "rm", "-f", "vm-id", "peer-id"},
+	}
+	if !reflect.DeepEqual(f.argv, want) {
+		t.Fatalf("commands = %#v, want %#v", f.argv, want)
+	}
+}
+
 func TestProofIsolationReadsRuntimeNetworkState(t *testing.T) {
 	f := &fakeRunner{result: Result{Stdout: []byte(`[{"HostConfig":{"NetworkMode":"none"},"NetworkSettings":{"Networks":{"none":{"EndpointID":"opaque"}}}}]`)}}
 	c := &Containerlab{Runner: f, Binary: "clab"}
@@ -79,5 +107,17 @@ func TestPutPreservesPathsWithSpaces(t *testing.T) {
 	got := strings.Join(f.argv[0], " ")
 	if !strings.Contains(got, `mkdir -p -- "$(dirname -- '/var/lib/lab data/file')"`) {
 		t.Fatalf("put command = %q", got)
+	}
+}
+
+func TestQGAPutUsesGuestHelper(t *testing.T) {
+	f := &fakeRunner{}
+	c := &Containerlab{Runner: f, Binary: "clab"}
+	if err := c.Put(context.Background(), "lab", "win", "qga", `C:\Lab Data\file.txt`, 0o600, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"docker", "exec", "-i", "clab-lab-win", "/labcontainers-guest", "put", "10m", "600", `C:\Lab Data\file.txt`}
+	if !reflect.DeepEqual(f.argv[0], want) {
+		t.Fatalf("command = %#v, want %#v", f.argv[0], want)
 	}
 }

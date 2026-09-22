@@ -122,8 +122,31 @@ func (c *Containerlab) ProofIsolation(ctx context.Context, lab string, nodes []s
 }
 
 func (c *Containerlab) Destroy(ctx context.Context, topology string) error {
-	_, err := c.run(ctx, nil, "destroy", "--topo", topology, "--cleanup")
-	return err
+	_, destroyErr := c.run(ctx, nil, "destroy", "--topo", topology, "--cleanup")
+	// Containerlab 0.79 may report a successful destroy while leaving a
+	// generic_vm container that was stopped and started during the test. The
+	// topology-path label is injected by Containerlab and scopes this fallback
+	// to the exact session; never sweep by name or image.
+	listed, listErr := c.Runner.Run(ctx, nil, "docker", "ps", "-aq", "--filter", "label=clab-topo-file="+topology)
+	if listErr == nil && listed.ExitCode == 0 {
+		ids := strings.Fields(string(listed.Stdout))
+		if len(ids) > 0 {
+			args := append([]string{"docker", "rm", "-f"}, ids...)
+			removed, removeErr := c.Runner.Run(ctx, nil, args...)
+			if removeErr != nil {
+				return removeErr
+			}
+			if removed.ExitCode != 0 {
+				return &CommandError{Argv: args, Result: removed}
+			}
+		}
+	} else if destroyErr == nil {
+		if listErr != nil {
+			return listErr
+		}
+		return &CommandError{Argv: []string{"docker", "ps", "--filter", "label=clab-topo-file=" + topology}, Result: listed}
+	}
+	return destroyErr
 }
 
 func (c *Containerlab) Lifecycle(ctx context.Context, topology, node, action string) error {
@@ -132,8 +155,18 @@ func (c *Containerlab) Lifecycle(ctx context.Context, topology, node, action str
 	default:
 		return fmt.Errorf("unknown lifecycle action %q", action)
 	}
-	_, err := c.run(ctx, nil, action, "--topo", topology, "--node", node)
-	return err
+	_, lifecycleErr := c.run(ctx, nil, action, "--topo", topology, "--node", node)
+	if action == "stop" {
+		return lifecycleErr
+	}
+	// Containerlab generic_vm containers are auto-removed when their wrapper is
+	// stopped. A successful start/restart can therefore leave no container.
+	// Full deploy is convergent and recreates only the missing node and links.
+	deployErr := c.Deploy(ctx, topology)
+	if deployErr != nil && lifecycleErr != nil {
+		return errors.Join(lifecycleErr, deployErr)
+	}
+	return deployErr
 }
 
 // Replace removes one node, then lets Containerlab's convergent full deploy restore that node and
@@ -167,6 +200,18 @@ func (c *Containerlab) Exec(ctx context.Context, lab, node, control string, time
 }
 
 func (c *Containerlab) Put(ctx context.Context, lab, node, control, path string, mode uint32, content []byte) error {
+	if control == "qga" {
+		container := "clab-" + lab + "-" + node
+		r, err := c.Runner.Run(ctx, bytes.NewReader(content), "docker", "exec", "-i", container,
+			"/labcontainers-guest", "put", "10m", strconv.FormatUint(uint64(mode), 8), path)
+		if err != nil {
+			return err
+		}
+		if r.ExitCode != 0 {
+			return &CommandError{Argv: []string{"put", path}, Result: r}
+		}
+		return nil
+	}
 	quoted := shellQuote(path)
 	command := "mkdir -p -- \"$(dirname -- " + quoted + ")\" && cat > " + quoted
 	if r, err := c.Exec(ctx, lab, node, control, 2*time.Minute, content, []string{"sh", "-c", command}); err != nil {

@@ -42,6 +42,7 @@ func Launch(ctx context.Context, opts Options) (*Client, error) {
 		}
 		opts.Socket = filepath.Join(tempDir, "labd.sock")
 	}
+	opts.StateDir = launchStateDir(tempDir, opts.StateDir)
 	labd := opts.LabdPath
 	if labd == "" {
 		labd = "labd"
@@ -71,13 +72,23 @@ func Launch(ctx context.Context, opts Options) (*Client, error) {
 }
 
 // Dial connects to an already running private daemon.
+func launchStateDir(tempDir, configured string) string {
+	if configured != "" || tempDir == "" {
+		return configured
+	}
+	return filepath.Join(tempDir, "state")
+}
+
 func Dial(ctx context.Context, socket string) (*Client, error) {
 	conn, err := grpc.DialContext(ctx, "unix://"+socket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 		}),
-		grpc.WithBlock())
+		grpc.WithBlock(),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallSendMsgSize(labv1.MaxMessageBytes),
+			grpc.MaxCallRecvMsgSize(labv1.MaxMessageBytes)))
 	if err != nil {
 		return nil, err
 	}

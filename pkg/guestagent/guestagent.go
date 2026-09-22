@@ -5,9 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +30,28 @@ type Agent struct {
 	conn   net.Conn
 	reader *bufio.Reader
 	Socket string
+	os     string
+}
+
+// OS returns the guest operating-system identifier reported by QEMU Guest
+// Agent (for example "linux" or "windows").
+func (a *Agent) OS(ctx context.Context) (string, error) {
+	a.mu.Lock()
+	if a.os != "" {
+		defer a.mu.Unlock()
+		return a.os, nil
+	}
+	a.mu.Unlock()
+	var info struct {
+		ID string `json:"id"`
+	}
+	if err := a.Call(ctx, "guest-get-osinfo", nil, &info); err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	a.os = strings.ToLower(info.ID)
+	a.mu.Unlock()
+	return strings.ToLower(info.ID), nil
 }
 
 type Result struct {
@@ -38,6 +59,11 @@ type Result struct {
 	Stderr []byte `json:"stderr"`
 	Code   int    `json:"code"`
 	Error  string `json:"error,omitempty"`
+}
+
+func isWindowsOS(value string) bool {
+	value = strings.ToLower(value)
+	return value == "windows" || value == "mswindows" || strings.HasPrefix(value, "win")
 }
 
 func (a *Agent) socket() string {
@@ -60,6 +86,36 @@ func (a *Agent) Read() (json.RawMessage, error) {
 	}
 }
 
+func marshalCommand(command string, args any) ([]byte, error) {
+	request := map[string]any{"execute": command}
+	if args != nil {
+		request["arguments"] = args
+	}
+	return json.Marshal(request)
+}
+
+func callDeadline(ctx context.Context, maximum time.Duration) time.Time {
+	deadline := time.Now().Add(maximum)
+	if value, ok := ctx.Deadline(); ok && value.Before(deadline) {
+		return value
+	}
+	return deadline
+}
+
+func dialUntilReady(ctx context.Context, network, address string) (net.Conn, error) {
+	for {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err == nil {
+			return conn, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 func (a *Agent) Call(ctx context.Context, command string, args, into any) (err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -69,22 +125,18 @@ func (a *Agent) Call(ctx context.Context, command string, args, into any) (err e
 			a.conn = nil
 		}
 	}()
-	deadline := time.Now().Add(30 * time.Second)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if a.conn == nil {
-		a.conn, err = (&net.Dialer{}).DialContext(ctx, "unix", a.socket())
+		a.conn, err = dialUntilReady(ctx, "unix", a.socket())
 		if err != nil {
 			return err
 		}
 		a.reader = bufio.NewReader(a.conn)
-		_ = a.conn.SetDeadline(deadline)
+		_ = a.conn.SetDeadline(callDeadline(ctx, 10*time.Minute))
 		token := time.Now().UnixNano() & ((1 << 52) - 1)
-		request, _ := json.Marshal(map[string]any{"execute": "guest-sync-delimited", "arguments": map[string]any{"id": token}})
+		request, _ := marshalCommand("guest-sync-delimited", map[string]any{"id": token})
 		if _, err = a.conn.Write(append(append([]byte{255}, request...), '\n')); err != nil {
 			return err
 		}
@@ -101,8 +153,8 @@ func (a *Agent) Call(ctx context.Context, command string, args, into any) (err e
 			}
 		}
 	}
-	_ = a.conn.SetDeadline(deadline)
-	request, err := json.Marshal(map[string]any{"execute": command, "arguments": args})
+	_ = a.conn.SetDeadline(callDeadline(ctx, 30*time.Second))
+	request, err := marshalCommand(command, args)
 	if err != nil {
 		return err
 	}
@@ -164,14 +216,18 @@ func (a *Agent) Upload(ctx context.Context, body io.Reader, path string) error {
 	}
 }
 
-func (a *Agent) Execute(ctx context.Context, argv []string) (Result, error) {
+func (a *Agent) Execute(ctx context.Context, argv []string, input []byte) (Result, error) {
 	if len(argv) == 0 {
 		return Result{}, fmt.Errorf("empty command")
 	}
 	var process struct {
 		PID int `json:"pid"`
 	}
-	if err := a.Call(ctx, "guest-exec", map[string]any{"path": argv[0], "arg": argv[1:], "capture-output": true}, &process); err != nil {
+	args := map[string]any{"path": argv[0], "arg": argv[1:], "capture-output": true}
+	if input != nil {
+		args["input-data"] = base64.StdEncoding.EncodeToString(input)
+	}
+	if err := a.Call(ctx, "guest-exec", args, &process); err != nil {
 		return Result{}, err
 	}
 	if process.PID <= 0 {
@@ -184,7 +240,12 @@ func (a *Agent) Execute(ctx context.Context, argv []string) (Result, error) {
 		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = a.Call(cleanup, "guest-exec", map[string]any{"path": "kill", "arg": []string{"-TERM", strconv.Itoa(process.PID)}, "capture-output": false}, nil)
+		guestOS, _ := a.OS(cleanup)
+		path, args := "kill", []string{"-TERM", strconv.Itoa(process.PID)}
+		if isWindowsOS(guestOS) {
+			path, args = `C:\Windows\System32\taskkill.exe`, []string{"/PID", strconv.Itoa(process.PID), "/T", "/F"}
+		}
+		_ = a.Call(cleanup, "guest-exec", map[string]any{"path": path, "arg": args, "capture-output": false}, nil)
 	}()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -222,6 +283,10 @@ func (a *Agent) Execute(ctx context.Context, argv []string) (Result, error) {
 type Server struct{ Agent *Agent }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Path == "/put" {
+		s.servePut(w, req)
+		return
+	}
 	var argv []string
 	data, err := base64.StdEncoding.DecodeString(req.Header.Get("X-Argv"))
 	if err == nil {
@@ -235,36 +300,72 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	ctx, cancel := context.WithTimeout(req.Context(), duration)
 	defer cancel()
 	var result Result
-	var temp string
+	var input []byte
 	if req.Header.Get("X-Stdin") == "1" {
-		var nonce [16]byte
-		if _, err = rand.Read(nonce[:]); err == nil {
-			temp = "/var/tmp/labcontainers-input/" + hex.EncodeToString(nonce[:])
-			var prepared Result
-			prepared, err = s.Agent.Execute(ctx, []string{"install", "-d", "-m", "0700", "/var/tmp/labcontainers-input"})
-			if err == nil && prepared.Code != 0 {
-				err = fmt.Errorf("prepare input: %s", prepared.Stderr)
-			}
-			if err == nil {
-				err = s.Agent.Upload(ctx, req.Body, temp)
-			}
-		}
-		if err == nil {
-			argv = append([]string{"sh", "-c", "exec \"$@\" < " + temp, "labcontainers"}, argv...)
-		}
-		defer func() {
-			if temp != "" {
-				cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
-				defer done()
-				_, _ = s.Agent.Execute(cleanup, []string{"rm", "-f", temp})
-			}
-		}()
+		input, err = io.ReadAll(io.LimitReader(req.Body, 64<<20))
 	}
 	if err == nil {
-		deadline, _ := ctx.Deadline()
-		seconds := strconv.FormatFloat(time.Until(deadline).Seconds(), 'f', 3, 64)
-		result, err = s.Agent.Execute(ctx, append([]string{"timeout", "--kill-after=5s", seconds}, argv...))
+		guestOS, osErr := s.Agent.OS(ctx)
+		if osErr != nil {
+			err = osErr
+		} else {
+			if !isWindowsOS(guestOS) {
+				deadline, _ := ctx.Deadline()
+				seconds := strconv.FormatFloat(time.Until(deadline).Seconds(), 'f', 3, 64)
+				argv = append([]string{"timeout", "--kill-after=5s", seconds}, argv...)
+			}
+			result, err = s.Agent.Execute(ctx, argv, input)
+		}
 	}
+	if err != nil {
+		result.Error, result.Code = err.Error(), 125
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) servePut(w http.ResponseWriter, req *http.Request) {
+	path := req.Header.Get("X-Path")
+	mode, err := strconv.ParseUint(req.Header.Get("X-Mode"), 8, 32)
+	if path == "" || err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	duration, err := time.ParseDuration(req.Header.Get("X-Timeout"))
+	if err != nil || duration <= 0 {
+		http.Error(w, "invalid timeout", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), duration)
+	defer cancel()
+	guestOS, err := s.Agent.OS(ctx)
+	if err == nil {
+		parentCommand := []string{"mkdir", "-p", filepath.Dir(path)}
+		if isWindowsOS(guestOS) {
+			parent := "."
+			if separator := strings.LastIndexAny(path, `\\/`); separator >= 0 {
+				parent = path[:separator]
+			}
+			quoted := strings.ReplaceAll(parent, "'", "''")
+			parentCommand = []string{`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, "-NoProfile", "-NonInteractive", "-Command", "[System.IO.Directory]::CreateDirectory('" + quoted + "') | Out-Null"}
+		}
+		var prepared Result
+		prepared, err = s.Agent.Execute(ctx, parentCommand, nil)
+		if err == nil && prepared.Code != 0 {
+			err = fmt.Errorf("create parent directory: %s", prepared.Stderr)
+		}
+	}
+	if err == nil {
+		err = s.Agent.Upload(ctx, io.LimitReader(req.Body, 256<<20), path)
+	}
+	if err == nil && !isWindowsOS(guestOS) {
+		var changed Result
+		changed, err = s.Agent.Execute(ctx, []string{"chmod", strconv.FormatUint(mode, 8), path}, nil)
+		if err == nil && changed.Code != 0 {
+			err = fmt.Errorf("chmod: %s", changed.Stderr)
+		}
+	}
+	result := Result{}
 	if err != nil {
 		result.Error, result.Code = err.Error(), 125
 	}
@@ -290,9 +391,28 @@ func Serve(execSocket string, agent *Agent) error {
 	return http.Serve(listener, &Server{Agent: agent})
 }
 
+func waitForSocket(ctx context.Context, path string) error {
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
 func Run(ctx context.Context, execSocket string, timeout time.Duration, stdin io.Reader, stdout, stderr io.Writer, argv []string) int {
 	if execSocket == "" {
 		execSocket = ExecSocket
+	}
+	if err := waitForSocket(ctx, execSocket); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 125
 	}
 	request, err := http.NewRequestWithContext(ctx, "POST", "http://guest/exec", stdin)
 	if err != nil {
@@ -327,13 +447,65 @@ func Run(ctx context.Context, execSocket string, timeout time.Duration, stdin io
 	return result.Code
 }
 
+func Put(ctx context.Context, execSocket string, timeout time.Duration, input io.Reader, path string, mode uint32, stderr io.Writer) int {
+	if execSocket == "" {
+		execSocket = ExecSocket
+	}
+	if err := waitForSocket(ctx, execSocket); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 125
+	}
+	request, err := http.NewRequestWithContext(ctx, "POST", "http://guest/put", input)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 125
+	}
+	request.Header.Set("X-Path", path)
+	request.Header.Set("X-Mode", strconv.FormatUint(uint64(mode), 8))
+	request.Header.Set("X-Timeout", timeout.String())
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", execSocket)
+	}}}
+	reply, err := client.Do(request)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 125
+	}
+	defer reply.Body.Close()
+	var result Result
+	if err := json.NewDecoder(reply.Body).Decode(&result); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 125
+	}
+	if result.Error != "" {
+		fmt.Fprintln(stderr, strings.TrimSpace(result.Error))
+	}
+	return result.Code
+}
+
 func Main() {
 	if len(os.Args) < 2 {
-		log.Fatal("labcontainers-guest serve | exec <timeout> <stdin:0|1> <argv...>")
+		log.Fatal("labcontainers-guest serve | exec <timeout> <stdin:0|1> <argv...> | put <timeout> <mode> <path>")
 	}
 	if os.Args[1] == "serve" {
 		log.Fatal(Serve(ExecSocket, &Agent{}))
 		return
+	}
+	if os.Args[1] == "put" {
+		if len(os.Args) != 5 {
+			log.Fatal("invalid put command")
+		}
+		duration, err := time.ParseDuration(os.Args[2])
+		if err != nil {
+			log.Fatal(err)
+		}
+		mode, err := strconv.ParseUint(os.Args[3], 8, 32)
+		if err != nil {
+			log.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), duration+10*time.Second)
+		defer cancel()
+		os.Exit(Put(ctx, ExecSocket, duration, os.Stdin, os.Args[4], uint32(mode), os.Stderr))
 	}
 	if len(os.Args) < 5 || os.Args[1] != "exec" {
 		log.Fatal("invalid command")

@@ -1,0 +1,7 @@
+version: 2
+ethernets:
+  topology:
+    match:
+      name: "en*"
+    dhcp4: false
+    optional: true

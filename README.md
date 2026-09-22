@@ -40,6 +40,16 @@ implicit management network under its default policy: every non-bridge node
 must resolve to `network-mode: none`, published ports and external link types
 are rejected, and `mgmt.skip-when-unused` is added to the private topology.
 
+Install the daemon and diagnostic CLI once for all language SDKs:
+
+```sh
+go install github.com/appmana/labcontainers/cmd/labd@v0.2.0-alpha.1
+go install github.com/appmana/labcontainers/cmd/labctl@v0.2.0-alpha.1
+```
+
+`labd` must be on `PATH`, or its path can be passed as Go's `LabdPath`,
+Python's `labd=`, or Node.js's `{labd: ...}` launch option.
+
 ## Go
 
 ```go
@@ -73,7 +83,7 @@ with Client() as client:
 Python can be installed directly from a Git checkout:
 
 ```sh
-python -m pip install 'git+https://github.com/AppMana/labcontainers.git@v0.1.0-alpha.1'
+python -m pip install 'git+https://github.com/AppMana/labcontainers.git@v0.2.0-alpha.1'
 ```
 
 ## Node.js
@@ -97,7 +107,7 @@ try {
 The npm package is also Git-installable without a publish step:
 
 ```sh
-npm install 'git+https://github.com/AppMana/labcontainers.git#v0.1.0-alpha.1'
+npm install 'git+https://github.com/AppMana/labcontainers.git#v0.2.0-alpha.1'
 ```
 
 Use `session.keep()` only for debugging. It returns a resume token in the raw
@@ -111,6 +121,13 @@ topology-declared Ethernet interfaces. The host reaches QEMU Guest Agent over a
 virtio-serial socket, so commands remain available while the network is cut.
 Windows images use the same protocol but must be built from user-supplied,
 licensed media.
+
+`images/windows-server-2022` contains a Packer/QEMU pipeline for a reusable
+Windows Server 2022 base image. It installs signed VirtIO drivers, QEMU Guest
+Agent, build-time WinRM, and current Windows updates before running Sysprep. The
+runtime container starts each test from a disposable qcow2 overlay and exposes
+only topology-declared NICs. See that directory's README for the build command
+and ISO requirements.
 
 ## Development
 

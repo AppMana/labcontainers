@@ -70,7 +70,7 @@ func run(socket, stateDir string, parentPID int) error {
 		return err
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.MaxRecvMsgSize(labv1.MaxMessageBytes), grpc.MaxSendMsgSize(labv1.MaxMessageBytes))
 	labv1.RegisterLabcontainersServer(grpcServer, service)
 	done := make(chan error, 1)
 	go func() { done <- grpcServer.Serve(lis) }()

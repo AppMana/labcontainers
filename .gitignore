@@ -1,5 +1,6 @@
 /bin/
 /dist/
+/build/
 /.labcontainers/
 __pycache__/
 *.pyc
@@ -7,3 +8,9 @@ __pycache__/
 .pytest_cache/
 node_modules/
 *.tgz
+uv.lock
+images/ubuntu-single-nic/labcontainers-guest
+images/windows-server-2022/*.qcow2
+images/windows-server-2022/labcontainers-guest
+images/windows-server-2022/packer/output/
+images/windows-server-2022/packer/packer_cache/

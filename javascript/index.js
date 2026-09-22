@@ -8,6 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const protoPath = path.join(__dirname, "..", "api", "v1", "labcontainers.proto");
+const maxMessageBytes = 257 * 1024 * 1024;
 const definition = protoLoader.loadSync(protoPath, {
   keepCase: false,
   longs: String,
@@ -39,7 +40,10 @@ class Client {
   }
 
   static async dial(socket) {
-    const rpc = new Service(`unix://${socket}`, grpc.credentials.createInsecure());
+    const rpc = new Service(`unix://${socket}`, grpc.credentials.createInsecure(), {
+      "grpc.max_send_message_length": maxMessageBytes,
+      "grpc.max_receive_message_length": maxMessageBytes,
+    });
     await ready(rpc);
     return new Client(socket, rpc);
   }
@@ -47,6 +51,7 @@ class Client {
   static async launch({socket, stateDir, labd = "labd"} = {}) {
     const temporaryDirectory = socket ? null : fs.mkdtempSync(path.join(os.tmpdir(), "labcontainers-"));
     socket ||= path.join(temporaryDirectory, "labd.sock");
+    stateDir ||= temporaryDirectory ? path.join(temporaryDirectory, "state") : undefined;
     const args = ["--socket", socket, "--parent-pid", String(process.pid)];
     if (stateDir) args.push("--state-dir", stateDir);
     const daemon = childProcess.spawn(labd, args, {stdio: "inherit"});

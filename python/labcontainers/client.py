@@ -12,6 +12,11 @@ import grpc
 from . import labcontainers_pb2 as pb
 from .rpc import LabcontainersStub
 
+_GRPC_OPTIONS = (
+    ("grpc.max_send_message_length", 257 * 1024 * 1024),
+    ("grpc.max_receive_message_length", 257 * 1024 * 1024),
+)
+
 
 class Client:
     """A per-test-suite Labcontainers client and child-daemon owner."""
@@ -20,11 +25,13 @@ class Client:
         self._temporary = socket is None
         self._directory = tempfile.mkdtemp(prefix="labcontainers-") if self._temporary else None
         self.socket = socket or str(pathlib.Path(self._directory) / "labd.sock")
+        if state_dir is None and self._directory is not None:
+            state_dir = str(pathlib.Path(self._directory) / "state")
         argv = [labd, "--socket", self.socket, "--parent-pid", str(os.getpid())]
         if state_dir:
             argv += ["--state-dir", state_dir]
         self._process = subprocess.Popen(argv)
-        self._channel = grpc.insecure_channel("unix://" + self.socket)
+        self._channel = grpc.insecure_channel("unix://" + self.socket, options=_GRPC_OPTIONS)
         grpc.channel_ready_future(self._channel).result(timeout=10)
         self._rpc = LabcontainersStub(self._channel)
         self._sessions: dict[str, str] = {}
@@ -36,7 +43,7 @@ class Client:
         self._directory = None
         self.socket = socket
         self._process = None
-        self._channel = grpc.insecure_channel("unix://" + socket)
+        self._channel = grpc.insecure_channel("unix://" + socket, options=_GRPC_OPTIONS)
         grpc.channel_ready_future(self._channel).result(timeout=10)
         self._rpc = LabcontainersStub(self._channel)
         self._sessions = {}
