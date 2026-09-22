@@ -36,6 +36,8 @@ NIC count comes from Containerlab's native `CLAB_INTFS`, including zero. Use
 contiguous `eth1` through `ethN` endpoints; sparse numbering is rejected rather
 than letting vrnetlab add placeholder adapters. Optional `--nics` must match
 that count. QEMU's default NIC is explicitly disabled.
+Monitor and serial-console listeners bind only to wrapper loopback, not the
+simulated data endpoints. QGA uses the serial channel and a wrapper Unix socket.
 
 To update only the launcher/control layer of an existing prepared image, build
 from an explicit base without rerunning Packer (commands from repository root):
@@ -54,7 +56,8 @@ Use a separate candidate tag and record the base image's immutable identity.
 `Dockerfile.runtime` intentionally has no default base image; it does not patch
 the Windows kernel or installed guest software. The opt-in test observes
 hardware adapters and both address families' default routes through QGA with
-zero and two declared NICs. This is VM isolation qualification, not proof of
+zero and two declared NICs, and verifies actual wrapper TCP listener addresses.
+This is VM isolation qualification, not proof of
 working Calico or Kubernetes pod networking.
 
 Project-specific layers remain in their owning repositories. Pass their

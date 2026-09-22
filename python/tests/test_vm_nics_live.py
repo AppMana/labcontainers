@@ -1,6 +1,7 @@
 """Opt-in guest-observed qualification of declared-NIC VM wrappers."""
 import json
 import os
+import subprocess
 from pathlib import Path
 import time
 import unittest
@@ -10,6 +11,27 @@ from labcontainers import Client, api, containerlab as clab, source
 
 class VMNICChecks:
     image_variable = "LABCONTAINERS_NICS_LIVE_IMAGE"
+
+    def assert_control_listeners_are_private(self, lab):
+        result = subprocess.run([
+            "docker", "ps", "-q", "--filter", "label=labcontainers.appmana.com/session=" + lab.id,
+            "--filter", "label=clab-node-name=vm",
+        ], check=True, capture_output=True, text=True)
+        containers = result.stdout.split()
+        self.assertEqual(len(containers), 1, "VM wrapper identity must be unambiguous")
+        sockets = subprocess.run([
+            "docker", "exec", containers[0], "cat", "/proc/net/tcp", "/proc/net/tcp6",
+        ], check=True, capture_output=True, text=True)
+        controls = []
+        for line in sockets.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            address, port = fields[1].split(":")
+            if int(port, 16) in (4000, 5000):
+                controls.append((address, int(port, 16)))
+        self.assertEqual(sorted(controls), [("0100007F", 4000), ("0100007F", 5000)],
+                         "QEMU controls must bind only wrapper loopback, not data endpoints")
 
     def observe(self, node):
         result = node.exec("ip", "-json", "link", "show", timeout_seconds=10)
@@ -51,6 +73,7 @@ class VMNICChecks:
                     self.fail(f"QGA never answered for {count} NICs: {last_error}")
                 self.assertEqual(len(ethernet), count, ethernet)
                 self.assertEqual(routes, [])
+                self.assert_control_listeners_are_private(lab)
                 print(f"guest-observed {count} NICs, no IPv4/IPv6 default route; evidence: {lab.value.artifact_directory}", flush=True)
 
 

@@ -11,13 +11,14 @@ import time
 from pathlib import Path
 
 import vrnetlab
-from interfaces import declared_nics, wait_for_interfaces
+from interfaces import declared_nics, isolate_control_listeners, wait_for_interfaces
 
 
 class WindowsVM(vrnetlab.VM):
     def __init__(self, nics: int, connection_mode: str):
         image = next('/' + name for name in os.listdir('/') if re.search(r'\.qcow2$', name))
         super().__init__('Administrator', '', disk_image=image, ram=8192, smp='4')
+        isolate_control_listeners(self)
         self.num_nics = nics
         self.conn_mode = connection_mode
         self.nic_type = 'virtio-net-pci'
