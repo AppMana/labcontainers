@@ -93,7 +93,7 @@ that backend lands; no best-effort partition is reported as successful.
 - Linux x86-64
 - Docker and KVM/QEMU for VM nodes
 - Containerlab exactly `v0.79.0`
-- Go 1.26 or newer for the native Go API (required by Containerlab)
+- Go 1.26.3 or newer for the native Go APIs (required by the pinned k0s types)
 - non-interactive scoped `sudo` access for Containerlab network operations
 
 Run `labctl doctor` before a suite. Labcontainers never creates Containerlab's
@@ -232,6 +232,24 @@ The SDK sends a native Kubernetes List over stdin to kubectl on the explicitly
 selected bastion. No caller-authored YAML or manifest file is needed.
 Unstructured CRDs retain their fields. CAPI association assertions stay in the
 product, and extraction of the six distribution builders is still pending.
+
+`pkg/kubernetes/k0s` is a thin, optional k0s coupling layer. Pass an upstream
+`github.com/k0sproject/k0s/pkg/apis/k0s/v1beta1.ClusterConfig` to
+`k0s.WriteConfig(ctx, node, "/etc/k0s/k0s.yaml", config)`. It serializes exactly
+that native object; it does not call default constructors or choose a CNI,
+address, load balancer, or image. `k0s.Install(ctx, node, "controller",
+"--config=/etc/k0s/k0s.yaml")` passes native arguments unchanged, without a
+shell. The caller stages the intended binary, explicitly starts it with
+`node.Exec(ctx, "k0s", "start")`, and owns orchestration and retry policy.
+`k0s.Ready(ctx, node)` is one supervisor/API/kubeconfig probe, not a pod-network
+qualification. These helpers use the existing `rig.Node` transport contract;
+they do not create VMs, networks, or management paths.
+
+The configuration types are pinned to k0s release `v1.36.2+k0s.0`, commit
+`bdf1c22c23a5` (Go resolves that tag to pseudo-version
+`v1.36.3-0.20260626104849-bdf1c22c23a5`). This is a configuration dependency,
+not a default runtime binary. Kubernetes staging module versions are explicitly
+pinned because dependency-module `replace` directives are not inherited.
 
 ## Python
 
