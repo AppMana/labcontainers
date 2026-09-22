@@ -64,7 +64,7 @@ class LiveTests(unittest.TestCase):
 
     def test_declared_path_is_the_only_path(self):
         config = clab.Config(name="python", topology=clab.Topology(
-            defaults=clab.NodeConfig(kind="linux", image="alpine:3.20"),
+            defaults=clab.NodeConfig(kind="linux", image="alpine:3.20", image_pull_policy="Never"),
             nodes={
                 "client": clab.NodeConfig(exec=["ip addr add 192.0.2.1/24 dev eth0"]),
                 "server": clab.NodeConfig(exec=["ip addr add 192.0.2.2/24 dev eth0"]),
@@ -74,6 +74,15 @@ class LiveTests(unittest.TestCase):
         labd = Path(__file__).resolve().parents[2] / "bin" / "labd"
         with Client(labd=str(labd)) as client:
             lab = client.start(api.LabSpec(topology=source(config)), ttl_seconds=300)
+            for name in ("client", "server"):
+                node = lab.node(name)
+                interfaces = node.exec("ls", "/sys/class/net")
+                interfaces.check_returncode()
+                self.assertEqual(set(interfaces.stdout.split()), {b"lo", b"eth0"})
+                for family in ("-4", "-6"):
+                    routes = node.exec("ip", family, "route", "show", "default")
+                    routes.check_returncode()
+                    self.assertEqual(routes.stdout.strip(), b"", f"{name}: unexpected {family} default route")
             plan = lab.plan(source(config))
             self.assertTrue(plan["dry-run"])
             self.assertEqual(plan["recreated-nodes"], [])

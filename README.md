@@ -1,5 +1,31 @@
 # Labcontainers
 
+Labcontainers couples Containerlab networks, container/VM execution, and test
+sessions. Tests construct native Go topology objects or Python objects generated
+from Containerlab's JSON Schema; serialization is an internal boundary, not YAML
+that test authors must write.
+
+The base SDK works without Kubernetes. Ad hoc VMs, containers, switches, and
+links use the underlying component types. Kubernetes helpers are an optional
+specialization for preparing and exercising clusters on that same topology.
+They are not a second topology or VM API.
+
+The network contract is deliberately minimal: no implicit management NIC or
+network, WAN, egress, or published ports. External connectivity must be declared
+explicitly. VM control uses a serial QEMU Guest Agent channel, not an alternate
+network path. Tests should prove that cutting the declared data path breaks
+reachability, not infer isolation from a successful boot or a ready node.
+
+Labcontainers is not a replacement Containerlab implementation. It pins
+Containerlab `v0.79.0`, with narrow dependency patches required for the
+reconciliation tests described below. Upstream types and raw transport requests
+remain accessible; the SDK adds ownership, cleanup, fault recovery, and evidence.
+
+Start with the [Go](#go) or [Python](#python) code-first APIs. The optional
+[Kubernetes helpers](#kubernetes-helpers) consume native Kubernetes objects.
+
+## Lifecycle and runtime qualification
+
 Crash tests use `Node.Crash()` (Python/JavaScript `node.crash()`) or the `CRASH`
 lifecycle action. It resolves one running container using topology and node
 labels and sends SIGKILL, killing its QEMU process without guest shutdown.
@@ -52,21 +78,6 @@ The same workflow runs the Linux VM bridge-restart regression with a preloaded
 `make build` then `LABCONTAINERS_VM_LIVE=1 go test ./pkg/client -run '^TestLiveVMCrashRestoresRuntimeBridgeMembership$' -v -count=1 -timeout=12m`.
 `LABCONTAINERS_VM_IMAGE` can override the local Ubuntu image and
 `LABCONTAINERS_LABD` can select a previously built daemon for RED/GREEN testing.
-
-Labcontainers is a Testcontainers-style API for isolated container and virtual
-machine test networks. It keeps Containerlab as the topology and dataplane
-engine, and adds test-session ownership, VM control without a management NIC,
-fault scheduling, cleanup, artifacts, and language-neutral APIs.
-
-It is not a Containerlab fork. Labcontainers currently pins the stock
-Containerlab `v0.79.0`. Tests construct native Go objects or Python objects
-generated from Containerlab's JSON Schema. The SDK serializes them internally;
-tests do not need YAML strings or files. Existing topology files remain accepted
-for interoperability with the Containerlab CLI.
-
-The core SDK has no Kubernetes requirement. A VM, switch, container, or explicit
-external connection uses the underlying Containerlab node/link types. Kubernetes
-fixtures are a separate specialization, not a replacement topology or VM API.
 
 ## Status
 
