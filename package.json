@@ -3,6 +3,10 @@
   "version": "0.1.0-alpha.1",
   "description": "Testcontainers-style isolated network and VM test labs",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AppMana/labcontainers.git"
+  },
   "main": "javascript/index.js",
   "types": "javascript/index.d.ts",
   "files": [

@@ -73,7 +73,7 @@ with Client() as client:
 Python can be installed directly from a Git checkout:
 
 ```sh
-python -m pip install 'git+https://HOST/OWNER/labcontainers.git@REVISION'
+python -m pip install 'git+https://github.com/AppMana/labcontainers.git@v0.1.0-alpha.1'
 ```
 
 ## Node.js
@@ -97,7 +97,7 @@ try {
 The npm package is also Git-installable without a publish step:
 
 ```sh
-npm install 'git+https://HOST/OWNER/labcontainers.git#REVISION'
+npm install 'git+https://github.com/AppMana/labcontainers.git#v0.1.0-alpha.1'
 ```
 
 Use `session.keep()` only for debugging. It returns a resume token in the raw
