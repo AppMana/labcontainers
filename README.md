@@ -354,6 +354,18 @@ guest-local copy verification, read-only media, and zero guest NICs. Run it with
 the host also needs `xorriso`. Windows artifact-media mounting is not covered by
 that test.
 
+`TestLiveK0sAirgapImport` exercises k0s's own bundle watcher, rather than calling
+`ctr images import` from the test. Supply `LABCONTAINERS_K0S_AIRGAP_VM_IMAGE`,
+`K0S_AIRGAP_BINARY`, `K0S_AIRGAP_BINARY_SHA256`, `K0S_AIRGAP_BUNDLE`,
+`K0S_AIRGAP_BUNDLE_SHA256`, and `K0S_AIRGAP_EXPECTED_IMAGE` (the fully qualified
+image reference expected in containerd). It attaches verified artifacts as
+read-only media, copies the bundle into `/var/lib/k0s/images` before startup,
+and uses native k0s configuration objects. The Linux wrapper must have no prior
+`/var/lib/k0s`; the host needs `xorriso` and a preloaded `alpine:3.20` peer image.
+The VM has one declared data link and no default route. This test deliberately
+disables CNI and kube-proxy: import success is not pod or service qualification,
+and does not verify the provenance or compatibility of a full runtime bundle.
+
 For static pods and native multi-document configuration such as kubeadm, call
 `kube.WriteObjects(ctx, node.Commands(), "/explicit/path", 0o600, objects...)`.
 The caller supplies the native objects, GVKs, destination and permissions;
