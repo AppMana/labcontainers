@@ -221,6 +221,18 @@ container addition/removal; Go additionally verifies a new data link carries
 traffic and unrelated containers retain both identity and start time. General
 VM topology-change and storage-fixture qualification remain outstanding.
 
+## Kubernetes helpers
+
+The optional `pkg/kubernetes/kube` package contains the shared bastion-side
+Kubernetes client extracted from cloud-provisioning. It does not open a host
+route or install a management network. Call `ApplyObjects(ctx, objects...)`
+with upstream Kubernetes `runtime.Object` values (for example generated
+`corev1.Pod` and `corev1.Service` types), supplying their native `TypeMeta`.
+The SDK sends a native Kubernetes List over stdin to kubectl on the explicitly
+selected bastion. No caller-authored YAML or manifest file is needed.
+Unstructured CRDs retain their fields. CAPI association assertions stay in the
+product, and extraction of the six distribution builders is still pending.
+
 ## Python
 
 ```python
