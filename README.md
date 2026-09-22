@@ -108,6 +108,12 @@ if err != nil { log.Fatal(err) }
 result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 ```
 
+`Exec` uses the daemon's two-minute command timeout. For longer bounded tests,
+use `node.ExecWithTimeout(ctx, 10*time.Minute, argv...)`; a longer context alone
+does not override the daemon default. A shorter context can still cancel the
+operation. A timeout/RPC error may not include partial command output: redirect
+diagnostics to a guest file and collect it before destroying the session.
+
 ## Python
 
 ```python

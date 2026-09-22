@@ -242,6 +242,15 @@ func (n *Node) Exec(ctx context.Context, argv ...string) (*labv1.ExecResponse, e
 	return n.session.client.rpc.Exec(ctx, &labv1.ExecRequest{Node: n.ref(), Argv: argv})
 }
 
+// ExecWithTimeout sets the guest command deadline instead of Exec's two-minute
+// daemon default. The caller's context can still cancel the request earlier.
+func (n *Node) ExecWithTimeout(ctx context.Context, timeout time.Duration, argv ...string) (*labv1.ExecResponse, error) {
+	if timeout < time.Millisecond {
+		return nil, fmt.Errorf("exec timeout must be at least one millisecond")
+	}
+	return n.session.client.rpc.Exec(ctx, &labv1.ExecRequest{Node: n.ref(), Argv: argv, TimeoutMillis: timeout.Milliseconds()})
+}
+
 func (n *Node) Put(ctx context.Context, path string, mode uint32, content []byte) error {
 	_, err := n.session.client.rpc.Put(ctx, &labv1.PutRequest{Node: n.ref(), Path: path, Mode: mode, Content: content})
 	return err
