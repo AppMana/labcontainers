@@ -42,7 +42,7 @@ func (c *Client) ApplyObjects(ctx context.Context, objects ...runtime.Object) er
 // guest path, for consumers such as kubeadm and kubelet's static-pod directory.
 // It does not apply objects to an API, create directories, infer GVKs, or add
 // defaults. All objects are validated and serialized before the node is touched.
-func WriteObjects(ctx context.Context, node rig.Node, filename string, mode fs.FileMode, objects ...runtime.Object) error {
+func WriteObjects(ctx context.Context, node rig.Commands, filename string, mode fs.FileMode, objects ...runtime.Object) error {
 	if !path.IsAbs(filename) || path.Clean(filename) == "/" {
 		return fmt.Errorf("Kubernetes object destination must be an absolute file path")
 	}

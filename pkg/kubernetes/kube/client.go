@@ -28,7 +28,7 @@ import (
 // Client runs kubectl on the bastion against whichever control plane
 // is currently able to answer.
 type Client struct {
-	Bastion rig.Node
+	Bastion rig.Commands
 	// ControlPlanes are the real addresses of the members, which are
 	// in every server certificate's SANs, so naming one needs no other
 	// accommodation.

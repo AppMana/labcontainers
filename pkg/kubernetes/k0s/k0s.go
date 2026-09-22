@@ -17,7 +17,7 @@ import (
 // default constructors or changing it. The path is explicit, as is the
 // corresponding --config argument passed to Install. Serialization belongs at
 // this boundary, not in a test's source code.
-func WriteConfig(ctx context.Context, node rig.Node, filename string, config *native.ClusterConfig) error {
+func WriteConfig(ctx context.Context, node rig.Commands, filename string, config *native.ClusterConfig) error {
 	if config == nil {
 		return fmt.Errorf("k0s configuration is required")
 	}
@@ -38,7 +38,7 @@ func WriteConfig(ctx context.Context, node rig.Node, filename string, config *na
 // Arguments are passed individually and unchanged, never through a shell. This
 // does not start k0s, silently reuse an existing installation, or fetch a binary.
 // Use node.Exec(ctx, "k0s", "start") when the scenario is ready to start it.
-func Install(ctx context.Context, node rig.Node, args ...string) error {
+func Install(ctx context.Context, node rig.Commands, args ...string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("k0s install arguments are required")
 	}
@@ -53,7 +53,7 @@ func Install(ctx context.Context, node rig.Node, args ...string) error {
 // Ready probes the supervisor, authenticated API, and admin kubeconfig through
 // the supplied node. It performs one attempt; the caller owns retry/deadline
 // policy. A successful probe is not evidence of working pod networking.
-func Ready(ctx context.Context, node rig.Node) error {
+func Ready(ctx context.Context, node rig.Commands) error {
 	for _, args := range [][]string{
 		{"k0s", "status"},
 		{"k0s", "kubectl", "get", "--raw", "/readyz"},

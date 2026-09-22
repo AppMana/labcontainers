@@ -12,9 +12,11 @@ import (
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
 	clab "github.com/appmana/labcontainers/pkg/containerlab"
+	"github.com/appmana/labcontainers/pkg/kubernetes/kube"
 	"github.com/srl-labs/containerlab/core"
 	"github.com/srl-labs/containerlab/links"
 	"github.com/srl-labs/containerlab/types"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // TestLive exercises the public Go SDK through a real labd, Containerlab, and
@@ -64,6 +66,25 @@ func TestLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence = lab.Artifacts()
+	// Optional fixture helpers must work through an ordinary session node,
+	// without a product-defined VM adapter or an additional network path.
+	commands := lab.Node("client").Commands()
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "native-object"},
+		"data":     map[string]any{"content": "literal: value"},
+	}}
+	if err := kube.WriteObjects(ctx, commands, "/tmp/native-object.yaml", 0o600, object); err != nil {
+		t.Fatal(err)
+	}
+	data, err := commands.Exec(ctx, "cat", "/tmp/native-object.yaml")
+	if err != nil || !strings.Contains(string(data), "native-object") {
+		t.Fatalf("native object upload/read failed: %s %v", data, err)
+	}
+	data, err = commands.Pipe(ctx, strings.NewReader("unchanged stdin"), "cat")
+	if err != nil || string(data) != "unchanged stdin" {
+		t.Fatalf("stdin changed: %q %v", data, err)
+	}
 	plan, err := lab.Plan(ctx, topology)
 	if err != nil {
 		t.Fatal(err)

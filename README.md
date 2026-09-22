@@ -273,8 +273,21 @@ address, load balancer, or image. `k0s.Install(ctx, node, "controller",
 shell. The caller stages the intended binary, explicitly starts it with
 `node.Exec(ctx, "k0s", "start")`, and owns orchestration and retry policy.
 `k0s.Ready(ctx, node)` is one supervisor/API/kubeconfig probe, not a pod-network
-qualification. These helpers use the existing `rig.Node` transport contract;
-they do not create VMs, networks, or management paths.
+qualification. These helpers need only the existing rig contract's command/file
+subset, `rig.Commands`; they do not require lifecycle or network-fault methods.
+Use `session.Node("controller").Commands()` with a normal Go session, or pass
+an existing product `rig.Node` directly. The adapter uses the same RPC and
+control channel, returns `rig.ExitError` for nonzero command exits, and buffers
+stdin/file readers for the byte-based transport. The original `node.Exec`,
+`node.Put`, `node.Ref`, and `client.RPC()` remain available unchanged for native
+request/result fields and call options. No VM, network, or management path is
+created by the adapter.
+
+For static pods and native multi-document configuration such as kubeadm, call
+`kube.WriteObjects(ctx, node.Commands(), "/explicit/path", 0o600, objects...)`.
+The caller supplies the native objects, GVKs, destination and permissions;
+serialization is internal. This does not apply the objects to an API or create
+directories.
 
 The configuration types are pinned to k0s release `v1.36.2+k0s.0`, commit
 `bdf1c22c23a5` (Go resolves that tag to pseudo-version

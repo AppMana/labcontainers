@@ -19,7 +19,7 @@ import (
 // INSTALL_RKE2_ARTIFACT_PATH, INSTALL_RKE2_METHOD, INSTALL_RKE2_TYPE and
 // INSTALL_RKE2_VERSION variables. This helper does not stage files, infer reuse,
 // or issue a separate service start operation.
-func Install(ctx context.Context, node rig.Node, installer string, environment ...string) error {
+func Install(ctx context.Context, node rig.Commands, installer string, environment ...string) error {
 	if !path.IsAbs(installer) || path.Clean(installer) == "/" {
 		return fmt.Errorf("RKE2 installer must be an absolute file path")
 	}
@@ -40,7 +40,7 @@ func Install(ctx context.Context, node rig.Node, installer string, environment .
 
 // Ready performs one authenticated API readiness attempt using explicit native
 // paths. The caller owns retry timing. It does not prove pod connectivity.
-func Ready(ctx context.Context, node rig.Node, kubectl, kubeconfig string) error {
+func Ready(ctx context.Context, node rig.Commands, kubectl, kubeconfig string) error {
 	for _, filename := range []string{kubectl, kubeconfig} {
 		if !path.IsAbs(filename) || path.Clean(filename) == "/" {
 			return fmt.Errorf("kubectl and kubeconfig require absolute file paths")
