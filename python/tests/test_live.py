@@ -21,6 +21,14 @@ class LiveTests(unittest.TestCase):
         labd = Path(__file__).resolve().parents[2] / "bin" / "labd"
         with Client(labd=str(labd)) as client:
             lab = client.start(api.LabSpec(topology=source(config)), ttl_seconds=300)
+            plan = lab.plan(source(config))
+            self.assertTrue(plan["dry-run"])
+            self.assertEqual(plan["recreated-nodes"], [])
+            draft = config.model_copy(deep=True)
+            draft.topology.nodes["adhoc"] = clab.NodeConfig()
+            addition = lab.plan(source(draft))
+            self.assertEqual(addition["added-nodes"], ["adhoc"])
+            self.assertEqual(lab.plan()["added-nodes"], [])
             probe = lambda: lab.node("client").exec("ping", "-c", "1", "-W", "1", "192.0.2.2")
             probe().check_returncode()
             fault = lab.set_link("client", "eth0", False)

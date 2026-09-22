@@ -62,6 +62,57 @@ func TestLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence = lab.Artifacts()
+	plan, err := lab.Plan(ctx, topology)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.DryRun || plan.DeployedLab || len(plan.RecreatedNodes)+len(plan.RestartedNodes)+len(plan.AddedNodes)+len(plan.DeletedNodes) != 0 {
+		t.Fatalf("unchanged native draft unexpectedly changes nodes: %+v", plan)
+	}
+	// Native v0.79 ownership discovery unconditionally excludes eth0, even
+	// when it is an explicitly declared data interface with network-mode none.
+	// Preserve this native diagnostic, rather than claiming a no-op plan or
+	// filtering away a potentially disruptive link operation.
+	if len(plan.AddedLinks) != 1 || plan.AddedLinks[0] != "client:eth0 -- server:eth0" {
+		t.Fatalf("native eth0 reconciliation behavior changed; requalify it: %+v", plan)
+	}
+	t.Logf("upstream eth0 discovery limitation remains visible: %+v", plan)
+	draftConfig := &core.Config{Prefix: &prefix, Topology: &types.Topology{
+		Defaults: &types.NodeDefinition{Kind: "linux", Image: "alpine:3.20", NetworkMode: "none"},
+		Nodes: map[string]*types.NodeDefinition{
+			"client": {Exec: []string{"ip addr add 192.0.2.1/24 dev eth0"}},
+			"server": {Exec: []string{"ip addr add 192.0.2.2/24 dev eth0"}},
+			"adhoc":  {},
+		},
+		Links: []*links.LinkDefinition{{Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth0", "server:eth0"}}}},
+	}}
+	draft, err := clab.Source(draftConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = lab.Plan(ctx, draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.AddedNodes) != 1 || plan.AddedNodes[0] != "adhoc" || len(plan.RecreatedNodes)+len(plan.RestartedNodes)+len(plan.DeletedNodes) != 0 {
+		t.Fatalf("native addition plan = %+v", plan)
+	}
+	draftConfig.Topology.Nodes["client"].Cmd = "sleep 100000"
+	disruptive, err := clab.Source(draftConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact, err := lab.Plan(ctx, disruptive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(impact.RecreatedNodes) != 1 || impact.RecreatedNodes[0] != "client" || impact.NodeChangeReasons["client"] == "" {
+		t.Fatalf("native recreation impact missing: %+v", impact)
+	}
+	unchanged, err := lab.Plan(ctx, nil)
+	if err != nil || len(unchanged.AddedNodes) != 0 {
+		t.Fatalf("draft changed authoritative topology: result=%+v error=%v", unchanged, err)
+	}
 	result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 	if err != nil {
 		t.Fatal(err)

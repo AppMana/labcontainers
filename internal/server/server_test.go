@@ -34,6 +34,10 @@ func (f *fakeBackend) call(value string)                          { f.calls = ap
 func (f *fakeBackend) Doctor(context.Context) error               { f.call("doctor"); return nil }
 func (f *fakeBackend) Validate(_ context.Context, _ string) error { f.call("validate"); return nil }
 func (f *fakeBackend) Deploy(_ context.Context, _ string) error   { f.call("deploy"); return nil }
+func (f *fakeBackend) Plan(_ context.Context, _ string) ([]byte, error) {
+	f.call("plan")
+	return []byte(`{"dry-run":true,"added-nodes":["new"]}`), nil
+}
 func (f *fakeBackend) ContainerName(_ context.Context, lab, node string) (string, error) {
 	return "native-" + lab + "-" + node, nil
 }

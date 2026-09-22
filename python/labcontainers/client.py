@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import pathlib
 import shutil
 import subprocess
@@ -104,6 +105,13 @@ class Session:
 
     def node(self, name: str) -> Node:
         return Node(self, name)
+
+    def plan(self, topology: pb.TopologySource | None = None) -> dict:
+        """Return native Containerlab ApplyResult JSON; never apply the draft."""
+        request = pb.PlanTopologyRequest(session_id=self.id)
+        if topology is not None:
+            request.topology.CopyFrom(topology)
+        return json.loads(self.client.rpc.PlanTopology(request).json)
 
     def keep(self, ttl_seconds: int = 86400) -> None:
         self.value = self.client._rpc.KeepSession(pb.KeepSessionRequest(id=self.id, ttl_seconds=ttl_seconds))

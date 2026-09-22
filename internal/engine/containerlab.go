@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/srl-labs/containerlab/core"
 )
 
 const SupportedContainerlabVersion = "0.79.0"
@@ -79,6 +80,19 @@ func (c *Containerlab) Validate(ctx context.Context, topology string) error {
 func (c *Containerlab) Deploy(ctx context.Context, topology string) error {
 	_, err := c.run(ctx, nil, "deploy", "--topo", topology, "--format", "json")
 	return err
+}
+
+// Plan returns Containerlab's native core.ApplyResult JSON unchanged.
+func (c *Containerlab) Plan(ctx context.Context, topology string) ([]byte, error) {
+	result, err := c.run(ctx, nil, "deploy", "--topo", topology, "--dry-run", "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	var plan *core.ApplyResult
+	if err := json.Unmarshal(result.Stdout, &plan); err != nil || plan == nil || !plan.DryRun {
+		return nil, fmt.Errorf("Containerlab returned invalid dry-run apply-result JSON")
+	}
+	return result.Stdout, nil
 }
 
 // ProofIsolation verifies runtime truth after deployment instead of trusting topology intent.

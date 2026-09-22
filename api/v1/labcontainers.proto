@@ -9,6 +9,7 @@ service Labcontainers {
   rpc GetSession(SessionRef) returns (Session);
   rpc DestroySession(DestroySessionRequest) returns (Empty);
   rpc KeepSession(KeepSessionRequest) returns (Session);
+  rpc PlanTopology(PlanTopologyRequest) returns (NativeApplyResult);
   rpc Exec(ExecRequest) returns (ExecResponse);
   rpc Put(PutRequest) returns (Empty);
   rpc Lifecycle(LifecycleRequest) returns (Node);
@@ -18,6 +19,16 @@ service Labcontainers {
 }
 
 message Empty {}
+
+message PlanTopologyRequest {
+  string session_id = 1;
+  // Omit to inspect drift against the current topology. Otherwise this is the
+  // proposed full native topology; planning does not deploy it.
+  TopologySource topology = 2;
+}
+
+// Containerlab core.ApplyResult JSON, without a parallel Labcontainers model.
+message NativeApplyResult { bytes json = 1; }
 
 message TopologySource {
   oneof source {

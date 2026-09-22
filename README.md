@@ -153,6 +153,23 @@ If an in-memory topology contains relative host bind paths, set
 base directory. This preserves their meaning when the daemon writes its private
 Containerlab file; no caller-authored topology file is necessary.
 
+`lab.Plan(ctx, proposedSource)` previews a full proposed topology through native
+Containerlab dry-run and returns `*core.ApplyResult`, including
+`RecreatedNodes`, `RestartedNodes`, and `NodeChangeReasons`. Pass `nil` to inspect
+drift against the current topology. Python's `lab.plan(source(config))` returns
+the same native JSON keys as a dictionary; `lab.plan()` inspects current drift.
+The raw transport retains the unmodified native JSON, including new upstream
+fields. Plans do not apply changes, reserve runtime state, or authorize a later
+restart automatically. Drafts retain the session's isolation policy and existing
+SDK-managed disk/bootstrap binds. Live topology application remains unfinished.
+
+Known native v0.79 limitation: interface ownership discovery excludes `eth0`
+unconditionally, even if it is a declared data link on a node with no management
+network. Native plans can therefore list an already-working `eth0` link in
+`AddedLinks`. The SDK preserves that result; it does not claim it is a no-op or
+automatically apply it. This upstream management-interface assumption still
+needs correction before general live reconciliation can be qualified.
+
 ## Python
 
 ```python

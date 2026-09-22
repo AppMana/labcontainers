@@ -3,6 +3,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
+	"github.com/srl-labs/containerlab/core"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -184,6 +186,20 @@ func (s *Session) ID() string             { return s.value.GetId() }
 func (s *Session) Name() string           { return s.value.GetName() }
 func (s *Session) Artifacts() string      { return s.value.GetArtifactDirectory() }
 func (s *Session) Node(name string) *Node { return &Node{session: s, name: name} }
+
+// Plan previews a native topology without applying it. A nil source reports
+// drift against the current topology. Results are Containerlab's own Go type.
+func (s *Session) Plan(ctx context.Context, source *labv1.TopologySource) (*core.ApplyResult, error) {
+	response, err := s.client.rpc.PlanTopology(ctx, &labv1.PlanTopologyRequest{SessionId: s.ID(), Topology: source})
+	if err != nil {
+		return nil, err
+	}
+	var result core.ApplyResult
+	if err := json.Unmarshal(response.GetJson(), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
 
 func (s *Session) Keep(ctx context.Context, ttl time.Duration) error {
 	p, err := s.client.rpc.KeepSession(ctx, &labv1.KeepSessionRequest{Id: s.ID(), TtlSeconds: int64(ttl / time.Second)})

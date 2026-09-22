@@ -35,6 +35,7 @@ type Backend interface {
 	Doctor(context.Context) error
 	Validate(context.Context, string) error
 	Deploy(context.Context, string) error
+	Plan(context.Context, string) ([]byte, error)
 	ProofIsolation(context.Context, string, []string) error
 	ContainerName(context.Context, string, string) (string, error)
 	Destroy(context.Context, string) error
@@ -132,7 +133,8 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	record := &session.Record{
-		ID: id, Name: prepared.Name, State: "provisioning",
+		AllowExternalAccess: req.GetSpec().GetAllowExternalAccess(),
+		ID:                  id, Name: prepared.Name, State: "provisioning",
 		TopologyPath: filepath.Join(dir, "topology.clab.yml"), ArtifactDirectory: artifacts,
 		Expires: time.Now().UTC().Add(ttl), ResumeToken: resume,
 		Nodes: map[string]*session.Node{}, Faults: map[string]*session.Fault{}, Labels: req.GetLabels(),
