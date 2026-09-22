@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/docker/docker/api/types/container"
 )
 
 const SupportedContainerlabVersion = "0.79.0"
@@ -27,21 +29,6 @@ type Containerlab struct {
 type Inspection struct {
 	Name  string `json:"name"`
 	State string `json:"state"`
-}
-
-type runtimeInspection struct {
-	HostConfig struct {
-		NetworkMode string `json:"NetworkMode"`
-	} `json:"HostConfig"`
-	NetworkSettings struct {
-		Networks map[string]struct {
-			Gateway           string `json:"Gateway"`
-			IPAddress         string `json:"IPAddress"`
-			MacAddress        string `json:"MacAddress"`
-			IPv6Gateway       string `json:"IPv6Gateway"`
-			GlobalIPv6Address string `json:"GlobalIPv6Address"`
-		} `json:"Networks"`
-	} `json:"NetworkSettings"`
 }
 
 func NewContainerlab() *Containerlab {
@@ -97,20 +84,37 @@ func (c *Containerlab) Deploy(ctx context.Context, topology string) error {
 // ProofIsolation verifies runtime truth after deployment instead of trusting topology intent.
 func (c *Containerlab) ProofIsolation(ctx context.Context, lab string, nodes []string) error {
 	for _, node := range nodes {
-		name := "clab-" + lab + "-" + node
+		name, err := c.containerID(ctx, lab, node)
+		if err != nil {
+			return err
+		}
 		r, err := checked(ctx, c.Runner, nil, "docker", "inspect", name)
 		if err != nil {
 			return fmt.Errorf("inspect isolation for %s: %w", node, err)
 		}
-		var inspections []runtimeInspection
+		var inspections []container.InspectResponse
 		if err := json.Unmarshal(r.Stdout, &inspections); err != nil || len(inspections) != 1 {
 			return fmt.Errorf("inspect isolation for %s: invalid Docker inspection", node)
 		}
 		inspection := inspections[0]
+		if inspection.ContainerJSONBase == nil || inspection.HostConfig == nil || inspection.NetworkSettings == nil {
+			return fmt.Errorf("inspect isolation for %s: missing Docker network state", node)
+		}
 		if inspection.HostConfig.NetworkMode != "none" {
 			return fmt.Errorf("node %s is not isolated: runtime network mode is %q, want none", node, inspection.HostConfig.NetworkMode)
 		}
+		if inspection.HostConfig.PublishAllPorts || len(inspection.HostConfig.PortBindings) != 0 {
+			return fmt.Errorf("node %s is not isolated: runtime host port publishing is configured", node)
+		}
+		for _, bindings := range inspection.NetworkSettings.Ports {
+			if len(bindings) != 0 {
+				return fmt.Errorf("node %s is not isolated: runtime has published host ports", node)
+			}
+		}
 		for networkName, network := range inspection.NetworkSettings.Networks {
+			if network == nil {
+				return fmt.Errorf("node %s: missing state for runtime network %q", node, networkName)
+			}
 			// Docker 29 reports its built-in `none` network as a bookkeeping
 			// endpoint. It is isolated as long as it has no usable L2/L3 identity.
 			if networkName != "none" || network.Gateway != "" || network.IPAddress != "" || network.MacAddress != "" || network.IPv6Gateway != "" || network.GlobalIPv6Address != "" {
@@ -170,7 +174,10 @@ func (c *Containerlab) Lifecycle(ctx context.Context, topology, node, action str
 	}
 	// Containerlab generic_vm containers are auto-removed when their wrapper is
 	// stopped. A successful start/restart can therefore leave no container.
-	// Full deploy is convergent and recreates only the missing node and links.
+	// Full deploy restores missing links, but native reconciliation may recreate
+	// containers with drift, including a VM's root disk. Attached disks live
+	// outside those containers. Scoped reconciliation and impact reporting are
+	// still required before this can promise stable container identity.
 	deployErr := c.Deploy(ctx, topology)
 	if deployErr != nil && lifecycleErr != nil {
 		return errors.Join(lifecycleErr, deployErr)
@@ -200,7 +207,10 @@ func (c *Containerlab) Exec(ctx context.Context, lab, node, control string, time
 	if len(argv) == 0 {
 		return Result{}, errors.New("argv is empty")
 	}
-	container := "clab-" + lab + "-" + node
+	container, err := c.containerID(ctx, lab, node)
+	if err != nil {
+		return Result{}, err
+	}
 	args := []string{"docker", "exec"}
 	if stdin != nil {
 		args = append(args, "-i")
@@ -219,7 +229,10 @@ func (c *Containerlab) Exec(ctx context.Context, lab, node, control string, time
 
 func (c *Containerlab) Put(ctx context.Context, lab, node, control, path string, mode uint32, content []byte) error {
 	if control == "qga" {
-		container := "clab-" + lab + "-" + node
+		container, err := c.containerID(ctx, lab, node)
+		if err != nil {
+			return err
+		}
 		r, err := c.Runner.Run(ctx, bytes.NewReader(content), "docker", "exec", "-i", container,
 			"/labcontainers-guest", "put", "10m", strconv.FormatUint(uint64(mode), 8), path)
 		if err != nil {
@@ -247,12 +260,15 @@ func (c *Containerlab) Put(ctx context.Context, lab, node, control, path string,
 	return nil
 }
 
-func (c *Containerlab) SetLink(ctx context.Context, lab, node, control, iface string, up bool) error {
+func (c *Containerlab) SetLink(ctx context.Context, lab, node, _ string, iface string, up bool) error {
 	state := "down"
 	if up {
 		state = "up"
 	}
-	r, err := c.Exec(ctx, lab, node, control, 30*time.Second, nil, []string{"ip", "link", "set", iface, state})
+	// The name belongs to the native topology's endpoint, not to the guest OS.
+	// A VM's guest might name the device ens2 or Ethernet; cutting the wrapper
+	// endpoint works across OSes and leaves serial QGA control available.
+	r, err := c.Exec(ctx, lab, node, "container", 30*time.Second, nil, []string{"ip", "link", "set", iface, state})
 	if err != nil {
 		return err
 	}

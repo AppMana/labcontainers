@@ -5,6 +5,12 @@ lifecycle action. It resolves one running container using topology and node
 labels and sends SIGKILL, killing its QEMU process without guest shutdown.
 Attached disks persist. `PowerOff()` retains Containerlab stop semantics.
 
+Current lifecycle reconciliation can recreate a VM container and its root disk
+after start/restart; only explicitly attached persistent disks are covered by
+the persistence guarantee. Native reconciliation impact reporting and scoped
+live topology updates remain unfinished. Do not treat a successful `Start` as
+proof that container identity or root-disk contents were preserved.
+
 VM teardown can recreate Containerlab veth links. Labcontainers journals Linux
 peer-container bridge memberships before crash/stop/restart/replacement and
 restores them before `Start` returns, so a caller does not need to reconnect
@@ -137,6 +143,16 @@ if err != nil { log.Fatal(err) }
 result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 ```
 
+For fields not exposed by convenience methods, use the generated transport
+directly: `c.RPC().Exec(ctx, &labcontainersv1.ExecRequest{Node: node.Ref(),
+Argv: argv, Stdin: input, TimeoutMillis: 900000})`. Python exposes the same
+surface as `client.rpc` and `node.ref`. These preserve the transport's request
+types, responses, errors, and call options; no parallel options model is needed.
+If an in-memory topology contains relative host bind paths, set
+`topology.BaseDirectory` (Python `topology.base_directory`) to their absolute
+base directory. This preserves their meaning when the daemon writes its private
+Containerlab file; no caller-authored topology file is necessary.
+
 ## Python
 
 ```python
@@ -205,6 +221,12 @@ npm install 'git+https://github.com/AppMana/labcontainers.git#v0.2.0-alpha.2'
 Use `session.keep()` only for debugging. It returns a resume token in the raw
 API and extends the session lease; ordinary test sessions are destroyed when
 their owning SDK closes or dies.
+
+For now, keeping a session requires an explicitly persistent state directory;
+the default private client's temporary directory is removed on close. Set an
+explicit `LabSpec.artifact_directory` outside that temporary directory to retain
+evidence. Automatic retained evidence and keep-on-failure lease handling are
+not yet complete.
 
 ## VM nodes
 

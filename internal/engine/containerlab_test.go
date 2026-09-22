@@ -16,6 +16,12 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Run(_ context.Context, _ io.Reader, argv ...string) (Result, error) {
 	f.argv = append(f.argv, append([]string(nil), argv...))
+	if strings.HasPrefix(strings.Join(argv, " "), "docker ps --no-trunc --filter label=containerlab=") {
+		if argv[len(argv)-1] == "{{.Names}}" {
+			return Result{Stdout: []byte("custom-prefix-node\n")}, nil
+		}
+		return Result{Stdout: []byte("native-container-id\n")}, nil
+	}
 	return f.result, nil
 }
 
@@ -96,7 +102,7 @@ func TestQGAExecUsesStandaloneGuestBinary(t *testing.T) {
 	if _, err := c.Exec(context.Background(), "lab", "n1", "qga", time.Second, nil, []string{"true"}); err != nil {
 		t.Fatal(err)
 	}
-	got := strings.Join(f.argv[0], " ")
+	got := strings.Join(f.argv[1], " ")
 	if !strings.Contains(got, "/labcontainers-guest exec 1s 0 true") {
 		t.Fatalf("command = %q", got)
 	}
@@ -108,7 +114,7 @@ func TestPutPreservesPathsWithSpaces(t *testing.T) {
 	if err := c.Put(context.Background(), "lab", "n1", "container", "/var/lib/lab data/file", 0o600, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	got := strings.Join(f.argv[0], " ")
+	got := strings.Join(f.argv[1], " ")
 	if !strings.Contains(got, `mkdir -p -- "$(dirname -- '/var/lib/lab data/file')"`) {
 		t.Fatalf("put command = %q", got)
 	}
@@ -120,8 +126,8 @@ func TestQGAPutUsesGuestHelper(t *testing.T) {
 	if err := c.Put(context.Background(), "lab", "win", "qga", `C:\Lab Data\file.txt`, 0o600, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"docker", "exec", "-i", "clab-lab-win", "/labcontainers-guest", "put", "10m", "600", `C:\Lab Data\file.txt`}
-	if !reflect.DeepEqual(f.argv[0], want) {
-		t.Fatalf("command = %#v, want %#v", f.argv[0], want)
+	want := []string{"docker", "exec", "-i", "native-container-id", "/labcontainers-guest", "put", "10m", "600", `C:\Lab Data\file.txt`}
+	if !reflect.DeepEqual(f.argv[1], want) {
+		t.Fatalf("command = %#v, want %#v", f.argv[1], want)
 	}
 }

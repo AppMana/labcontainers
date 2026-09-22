@@ -24,6 +24,9 @@ message TopologySource {
     string path = 1;
     bytes yaml = 2;
   }
+  // Absolute directory for relative host binds in an in-memory topology.
+  // File sources already carry this context through their parent directory.
+  string base_directory = 3;
 }
 
 message NodeExtension {

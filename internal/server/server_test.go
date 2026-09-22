@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	clab "github.com/appmana/labcontainers/pkg/containerlab"
 	"github.com/srl-labs/containerlab/core"
 	"github.com/srl-labs/containerlab/types"
+	"gopkg.in/yaml.v2"
 )
 
 type fakeBackend struct {
@@ -26,6 +28,9 @@ func (f *fakeBackend) call(value string)                          { f.calls = ap
 func (f *fakeBackend) Doctor(context.Context) error               { f.call("doctor"); return nil }
 func (f *fakeBackend) Validate(_ context.Context, _ string) error { f.call("validate"); return nil }
 func (f *fakeBackend) Deploy(_ context.Context, _ string) error   { f.call("deploy"); return nil }
+func (f *fakeBackend) ContainerName(_ context.Context, lab, node string) (string, error) {
+	return "native-" + lab + "-" + node, nil
+}
 func (f *fakeBackend) ProofIsolation(_ context.Context, _ string, nodes []string) error {
 	f.call("proof")
 	f.proofNodes = append([]string(nil), nodes...)
@@ -49,6 +54,41 @@ func TestExternalOptInRetainsIsolationChecks(t *testing.T) {
 	}
 	if !reflect.DeepEqual(backend.proofNodes, []string{"isolated"}) {
 		t.Fatalf("unexpected runtime checks: %v", backend.proofNodes)
+	}
+}
+
+func TestInMemoryTopologyRetainsRelativeBindContext(t *testing.T) {
+	s, _ := testServer(t)
+	base := t.TempDir()
+	source, err := clab.Source(&core.Config{Name: "binds", Topology: &types.Topology{
+		Nodes: map[string]*types.NodeDefinition{"node": {Kind: "linux", Image: "alpine:3.20", Binds: []string{"data:/data:ro"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.BaseDirectory = base
+	session, err := s.CreateSession(context.Background(), &labv1.CreateSessionRequest{Spec: &labv1.LabSpec{Topology: source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(session.GetTopologyPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config core.Config
+	if err := yaml.UnmarshalStrict(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := config.Topology.Nodes["node"].Binds[0], filepath.Join(base, "data")+":/data:ro"; got != want {
+		t.Fatalf("bind = %q, want %q", got, want)
+	}
+	source.BaseDirectory = "relative"
+	if _, _, err := topologyBytes(source); err == nil {
+		t.Fatal("relative base directory accepted")
+	}
+	source.Source = &labv1.TopologySource_Path{Path: "file.yml"}
+	if _, _, err := topologyBytes(source); err == nil {
+		t.Fatal("ambiguous source directory accepted")
 	}
 }
 func (f *fakeBackend) Destroy(_ context.Context, _ string) error { f.call("destroy"); return nil }

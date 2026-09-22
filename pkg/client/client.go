@@ -31,6 +31,11 @@ type Client struct {
 	sessions map[string]string
 }
 
+// RPC exposes the generated transport client without narrowing its request
+// types, call options, results, or errors. The Client still owns its connection
+// and child daemon; callers must keep it open while using this client.
+func (c *Client) RPC() labv1.LabcontainersClient { return c.rpc }
+
 // Launch starts a private labd child and connects to it.
 func Launch(ctx context.Context, opts Options) (*Client, error) {
 	tempDir := ""
@@ -237,6 +242,11 @@ type Node struct {
 	session *Session
 	name    string
 }
+
+// Ref returns the generated transport reference for this session-owned node.
+// It can be used with RPC for stdin, explicit deadlines, and other fields that
+// the convenience methods do not expose.
+func (n *Node) Ref() *labv1.NodeRef { return n.ref() }
 
 func (n *Node) Exec(ctx context.Context, argv ...string) (*labv1.ExecResponse, error) {
 	return n.session.client.rpc.Exec(ctx, &labv1.ExecRequest{Node: n.ref(), Argv: argv})

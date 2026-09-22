@@ -34,6 +34,7 @@ type Backend interface {
 	Validate(context.Context, string) error
 	Deploy(context.Context, string) error
 	ProofIsolation(context.Context, string, []string) error
+	ContainerName(context.Context, string, string) (string, error)
 	Destroy(context.Context, string) error
 	Lifecycle(context.Context, string, string, string) error
 	Replace(context.Context, string, string) error
@@ -339,7 +340,13 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 			return nil, status.Error(codes.InvalidArgument, "netem requires node and interface")
 		}
 		f.Kind = "netem"
-		container := "clab-" + r.Name + "-" + f.Node
+		if r.Nodes[f.Node] == nil {
+			return nil, status.Error(codes.InvalidArgument, "netem requires a known node")
+		}
+		container, err := s.Backend.ContainerName(ctx, r.Name, f.Node)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "resolve netem node: %v", err)
+		}
 		if err := s.Backend.Netem(ctx, container, f.Interface, time.Duration(fault.Netem.GetDelayMillis())*time.Millisecond, time.Duration(fault.Netem.GetJitterMillis())*time.Millisecond, fault.Netem.GetLossPercent(), fault.Netem.GetRateKbit(), fault.Netem.GetCorruptionPercent()); err != nil {
 			return nil, status.Errorf(codes.Internal, "apply netem: %v", err)
 		}
@@ -388,7 +395,11 @@ func (s *Server) revertFault(ctx context.Context, sessionID, faultID string) err
 	}
 	switch f.Kind {
 	case "netem":
-		if err := s.Backend.ResetNetem(ctx, "clab-"+r.Name+"-"+f.Node, f.Interface); err != nil {
+		container, err := s.Backend.ContainerName(ctx, r.Name, f.Node)
+		if err != nil {
+			return status.Errorf(codes.FailedPrecondition, "resolve netem node: %v", err)
+		}
+		if err := s.Backend.ResetNetem(ctx, container, f.Interface); err != nil {
 			return status.Errorf(codes.Internal, "reset netem: %v", err)
 		}
 	case "link-state":
@@ -555,8 +566,15 @@ func (s *Server) CleanupUnkept(ctx context.Context) error {
 func topologyBytes(src *labv1.TopologySource) ([]byte, string, error) {
 	switch source := src.GetSource().(type) {
 	case *labv1.TopologySource_Yaml:
-		return source.Yaml, "", nil
+		base := src.GetBaseDirectory()
+		if base != "" && !filepath.IsAbs(base) {
+			return nil, "", errors.New("topology base_directory must be absolute")
+		}
+		return source.Yaml, base, nil
 	case *labv1.TopologySource_Path:
+		if src.GetBaseDirectory() != "" {
+			return nil, "", errors.New("topology base_directory is only supported with an in-memory source")
+		}
 		path, err := filepath.Abs(source.Path)
 		if err != nil {
 			return nil, "", fmt.Errorf("resolve topology: %w", err)

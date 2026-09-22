@@ -36,7 +36,8 @@ func TestLive(t *testing.T) {
 			t.Errorf("close: %v", err)
 		}
 	}()
-	topology, err := clab.Source(&core.Config{Name: "basic", Topology: &types.Topology{
+	prefix := "native-sdk"
+	topology, err := clab.Source(&core.Config{Name: "basic", Prefix: &prefix, Topology: &types.Topology{
 		Defaults: &types.NodeDefinition{Kind: "linux", Image: "alpine:3.20", NetworkMode: "none"},
 		Nodes: map[string]*types.NodeDefinition{
 			"client": {Exec: []string{"ip addr add 192.0.2.1/24 dev eth0"}},
@@ -57,6 +58,17 @@ func TestLive(t *testing.T) {
 	}
 	if result.GetExitCode() != 0 {
 		t.Fatalf("ping exited %d: %s", result.GetExitCode(), result.GetStderr())
+	}
+	impairment, err := lab.Netem(ctx, "client", "eth0", &labv1.Netem{LossPercent: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "1", "192.0.2.2")
+	if err != nil || result.GetExitCode() == 0 {
+		t.Fatalf("100%% packet loss did not cut reachability: result=%v error=%v", result, err)
+	}
+	if err := impairment.Revert(ctx); err != nil {
+		t.Fatal(err)
 	}
 	fault, err := lab.SetLink(ctx, "client", "eth0", false)
 	if err != nil {

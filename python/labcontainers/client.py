@@ -54,6 +54,11 @@ class Client:
         self._sessions[value.id] = value.resume_token
         return Session(self, value)
 
+    @property
+    def rpc(self) -> LabcontainersStub:
+        """Full transport API, including request fields and gRPC call options."""
+        return self._rpc
+
     def resume(self, session_id: str) -> Session:
         value = self._rpc.GetSession(pb.SessionRef(id=session_id))
         self._sessions[value.id] = value.resume_token
@@ -127,6 +132,11 @@ class Node:
 
     def _ref(self) -> pb.NodeRef:
         return pb.NodeRef(session_id=self.session.id, node=self.name)
+
+    @property
+    def ref(self) -> pb.NodeRef:
+        """Transport reference for calls through ``client.rpc``."""
+        return self._ref()
 
     def exec(self, *argv: str, stdin: bytes = b"", timeout_seconds: float = 120) -> subprocess.CompletedProcess[bytes]:
         value = self.session.client._rpc.Exec(pb.ExecRequest(node=self._ref(), argv=argv, stdin=stdin, timeout_millis=int(timeout_seconds * 1000)))
