@@ -297,6 +297,33 @@ pinned because dependency-module `replace` directives are not inherited.
 
 ## Python
 
+Kubernetes is optional: install `labcontainers[kubernetes]` to use the official
+[Kubernetes Python client's generated models](https://github.com/kubernetes-client/python).
+Import models from that client directly, without Labcontainers replacements:
+
+```python
+from kubernetes.client import V1ConfigMap, V1ObjectMeta
+from labcontainers.kubernetes import apply_objects, write_objects
+
+config = V1ConfigMap(
+    api_version="v1", kind="ConfigMap",
+    metadata=V1ObjectMeta(name="scenario"), data={"mode": "isolated"},
+)
+apply_objects(
+    lab.node("bastion"), config,
+    kubectl_argv=("kubectl", "--kubeconfig", "/etc/admin.conf"),
+)
+# When a component consumes a guest file rather than the Kubernetes API:
+write_objects(lab.node("guest"), "/tmp/config.json", config)
+```
+
+The optional helpers use the upstream serializer, require explicit native
+`api_version`/`kind`, and preserve dictionary-based custom resources. They do
+not load host kubeconfig, connect the host to the API, select an endpoint,
+install kubectl, or retry. `apply_objects` returns the native CompletedProcess
+and raises CalledProcessError with diagnostics on nonzero exit. These are
+object-transport helpers, not a fully extracted distribution fixture.
+
 ```python
 from labcontainers import Client, api, containerlab as clab, source
 

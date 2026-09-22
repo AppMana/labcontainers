@@ -1,6 +1,7 @@
 """Opt-in, code-only test against the real daemon and Containerlab."""
 
 import os
+import json
 import time
 import subprocess
 from pathlib import Path
@@ -11,6 +12,28 @@ from labcontainers import Client, api, containerlab as clab, source
 
 @unittest.skipUnless(os.environ.get("LABCONTAINERS_LIVE") == "1", "requires privileged Containerlab")
 class LiveTests(unittest.TestCase):
+    def test_native_kubernetes_object_guest_file(self):
+        from kubernetes.client import V1ConfigMap, V1ObjectMeta
+        from labcontainers.kubernetes import write_objects
+
+        config = clab.Config(name="python-object", topology=clab.Topology(nodes={
+            "guest": clab.NodeConfig(kind="linux", image="alpine:3.20", image_pull_policy="Never"),
+        }))
+        labd = Path(__file__).resolve().parents[2] / "bin" / "labd"
+        with Client(labd=str(labd)) as client:
+            lab = client.start(api.LabSpec(topology=source(config)), ttl_seconds=60)
+            node = lab.node("guest")
+            obj = V1ConfigMap(api_version="v1", kind="ConfigMap",
+                              metadata=V1ObjectMeta(name="native-object"),
+                              data={"literal": "text: not caller YAML"})
+            write_objects(node, "/tmp/native-object.json", obj)
+            result = node.exec("cat", "/tmp/native-object.json")
+            result.check_returncode()
+            self.assertEqual(json.loads(result.stdout)["data"], obj.data)
+            result = node.exec("stat", "-c", "%a", "/tmp/native-object.json")
+            result.check_returncode()
+            self.assertEqual(result.stdout.strip(), b"600")
+
     def test_kept_lab_survives_close_then_expires(self):
         config = clab.Config(name="python-kept", topology=clab.Topology(nodes={
             "kept": clab.NodeConfig(kind="linux", image="alpine:3.20"),
