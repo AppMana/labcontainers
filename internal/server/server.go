@@ -305,6 +305,7 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 		}
 		err = s.Backend.Replace(ctx, r.TopologyPath, n.Name)
 	} else {
+		s.event(r, "node."+action+".requested", map[string]any{"node": n.Name})
 		err = s.Backend.Lifecycle(ctx, r.TopologyPath, n.Name, action)
 	}
 	if err != nil {
@@ -493,6 +494,9 @@ func (s *Server) waitExec(ctx context.Context, sessionID string, wait *labv1.Wai
 			if result.GetExitCode() == wait.GetExpectedExitCode() &&
 				strings.Contains(string(result.GetStdout()), string(wait.GetStdoutContains())) &&
 				strings.Contains(string(result.GetStderr()), string(wait.GetStderrContains())) {
+				if r, loadErr := s.record(sessionID); loadErr == nil {
+					s.event(r, "timeline.predicate.matched", map[string]any{"node": execRequest.GetNode().GetNode()})
+				}
 				return nil
 			}
 		} else {
