@@ -37,6 +37,26 @@ contiguous `eth1` through `ethN` endpoints; sparse numbering is rejected rather
 than letting vrnetlab add placeholder adapters. Optional `--nics` must match
 that count. QEMU's default NIC is explicitly disabled.
 
+To update only the launcher/control layer of an existing prepared image, build
+from an explicit base without rerunning Packer (commands from repository root):
+
+```sh
+CGO_ENABLED=0 go build -o images/windows-server-2022/labcontainers-guest ./cmd/labcontainers-guest
+docker build -f images/windows-server-2022/Dockerfile.runtime \
+  --build-context labcontainers-common=images/common \
+  --build-arg BASE_IMAGE=YOUR_PREPARED_WINDOWS_IMAGE \
+  -t labcontainers/windows-server-2022:native-nics images/windows-server-2022
+LABCONTAINERS_WINDOWS_NICS_LIVE_IMAGE=labcontainers/windows-server-2022:native-nics \
+  python -m unittest discover -s python/tests -p test_vm_nics_live.py -v
+```
+
+Use a separate candidate tag and record the base image's immutable identity.
+`Dockerfile.runtime` intentionally has no default base image; it does not patch
+the Windows kernel or installed guest software. The opt-in test observes
+hardware adapters and both address families' default routes through QGA with
+zero and two declared NICs. This is VM isolation qualification, not proof of
+working Calico or Kubernetes pod networking.
+
 Project-specific layers remain in their owning repositories. Pass their
 PowerShell entry points through `provisioning_scripts` to bake Kubernetes,
 Calico, storage, or cloud-provider prerequisites after the shared VirtIO/QGA

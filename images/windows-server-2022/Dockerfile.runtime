@@ -1,0 +1,9 @@
+# Update only the launcher/control layer of an explicitly selected prepared VM
+# image. This does not rebuild or patch the Windows guest disk.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY labcontainers-guest /labcontainers-guest
+COPY launcher.py /launch.py
+COPY --from=labcontainers-common interfaces.py /interfaces.py
+RUN chmod 0755 /labcontainers-guest /launch.py
+ENTRYPOINT ["uv", "run", "/launch.py"]
