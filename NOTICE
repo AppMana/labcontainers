@@ -2,5 +2,8 @@ Labcontainers
 Copyright 2026 AppMana
 
 Labcontainers interoperates with Containerlab, which is licensed under the
-BSD 3-Clause License. Containerlab is invoked as a separate executable and is
-not copied into this source tree.
+BSD 3-Clause License. The Go topology adapter imports Containerlab's native
+configuration types. Python topology bindings are generated from its JSON
+Schema, vendored in schemas/containerlab. The upstream license is included
+there and in Python distributions as labcontainers/CONTAINERLAB-LICENSE.
+Deployment uses the separately installed Containerlab executable.

@@ -169,13 +169,11 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 		_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
 		return nil, status.Errorf(codes.Internal, "deploy session %s: %v", id, err)
 	}
-	if !req.GetSpec().GetAllowExternalAccess() {
-		if err := s.Backend.ProofIsolation(ctx, record.Name, prepared.TestNodes); err != nil {
-			record.State = "failed"
-			_ = s.Store.Save(record)
-			_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
-			return nil, status.Errorf(codes.FailedPrecondition, "isolation proof failed for session %s: %v", id, err)
-		}
+	if err := s.Backend.ProofIsolation(ctx, record.Name, prepared.IsolatedNodes); err != nil {
+		record.State = "failed"
+		_ = s.Store.Save(record)
+		_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
+		return nil, status.Errorf(codes.FailedPrecondition, "isolation proof failed for session %s: %v", id, err)
 	}
 	record.State = "running"
 	for _, node := range record.Nodes {

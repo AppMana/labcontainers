@@ -9,7 +9,7 @@ description = "Isolated network and VM integration-test labs powered by Containe
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
-dependencies = ["grpcio>=1.66,<2", "protobuf>=4.25,<6"]
+dependencies = ["grpcio>=1.66,<2", "protobuf>=4.25,<6", "pydantic>=2.10,<3"]
 
 [project.urls]
 Repository = "https://github.com/AppMana/labcontainers"
@@ -20,3 +20,7 @@ package-dir = {"" = "python"}
 
 [tool.setuptools.packages.find]
 where = ["python"]
+include = ["labcontainers*"]
+
+[tool.setuptools.package-data]
+labcontainers = ["CONTAINERLAB-LICENSE"]

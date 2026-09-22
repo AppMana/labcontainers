@@ -46,7 +46,14 @@ engine, and adds test-session ownership, VM control without a management NIC,
 fault scheduling, cleanup, artifacts, and language-neutral APIs.
 
 It is not a Containerlab fork. Labcontainers currently pins the stock
-Containerlab `v0.79.0` CLI and accepts unmodified `.clab.yml` topology files.
+Containerlab `v0.79.0`. Tests construct native Go objects or Python objects
+generated from Containerlab's JSON Schema. The SDK serializes them internally;
+tests do not need YAML strings or files. Existing topology files remain accepted
+for interoperability with the Containerlab CLI.
+
+The core SDK has no Kubernetes requirement. A VM, switch, container, or explicit
+external connection uses the underlying Containerlab node/link types. Kubernetes
+fixtures are a separate specialization, not a replacement topology or VM API.
 
 ## Status
 
@@ -73,12 +80,18 @@ that backend lands; no best-effort partition is reported as successful.
 - Linux x86-64
 - Docker and KVM/QEMU for VM nodes
 - Containerlab exactly `v0.79.0`
+- Go 1.26 or newer for the native Go API (required by Containerlab)
 - non-interactive scoped `sudo` access for Containerlab network operations
 
 Run `labctl doctor` before a suite. Labcontainers never creates Containerlab's
-implicit management network under its default policy: every non-bridge node
-must resolve to `network-mode: none`, published ports and external link types
-are rejected, and `mgmt.skip-when-unused` is added to the private topology.
+implicit management network under its default policy: omitted node network mode
+becomes `none`; explicit non-isolated modes, published ports, and external links
+(including short-form host/management links and borrowed host bridges) require opt-in. There is no default
+WAN or egress connection. `mgmt.skip-when-unused` is set on the private topology.
+An external-access opt-in permits explicitly declared connections; it does not
+enable implicit networks or disable runtime checks on the other isolated nodes.
+Runtime Docker checks alone do not certify guest NICs or application reachability;
+network-sensitive tests must also cut their declared paths and probe from guests.
 
 Install the daemon and diagnostic CLI once for all language SDKs:
 
@@ -93,16 +106,32 @@ Python's `labd=`, or Node.js's `{labd: ...}` launch option.
 ## Go
 
 ```go
+// Native imports, not a second Labcontainers topology model:
+// clab "github.com/appmana/labcontainers/pkg/containerlab"
+// "github.com/srl-labs/containerlab/core"
+// "github.com/srl-labs/containerlab/types"
+// "github.com/srl-labs/containerlab/links"
+
 ctx := context.Background()
 c, err := client.Launch(ctx, client.Options{})
 if err != nil { log.Fatal(err) }
 defer c.Close()
 
-lab, err := c.Start(ctx, &labcontainersv1.LabSpec{
-    Topology: &labcontainersv1.TopologySource{
-        Source: &labcontainersv1.TopologySource_Path{Path: "basic.clab.yml"},
+topology, err := clab.Source(&core.Config{
+    Name: "basic",
+    Topology: &types.Topology{
+        Defaults: &types.NodeDefinition{Kind: "linux", Image: "alpine:3.20"},
+        Nodes: map[string]*types.NodeDefinition{
+            "client": {Exec: []string{"ip addr add 192.0.2.1/24 dev eth0"}},
+            "server": {Exec: []string{"ip addr add 192.0.2.2/24 dev eth0"}},
+        },
+        Links: []*links.LinkDefinition{{
+            Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth0", "server:eth0"}},
+        }},
     },
-}, 30*time.Minute)
+})
+if err != nil { log.Fatal(err) }
+lab, err := c.Start(ctx, &labcontainersv1.LabSpec{Topology: topology}, 30*time.Minute)
 if err != nil { log.Fatal(err) }
 
 result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
@@ -111,22 +140,45 @@ result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 ## Python
 
 ```python
-from labcontainers import Client, api
+from labcontainers import Client, api, containerlab as clab, source
+
+topology = clab.Config(
+    name="basic",
+    topology=clab.Topology(
+        defaults=clab.NodeConfig(kind="linux", image="alpine:3.20"),
+        nodes={
+            "client": clab.NodeConfig(exec=["ip addr add 192.0.2.1/24 dev eth0"]),
+            "server": clab.NodeConfig(exec=["ip addr add 192.0.2.2/24 dev eth0"]),
+        },
+        links=[clab.LinkConfigShort(endpoints=["client:eth0", "server:eth0"])],
+    ),
+)
 
 with Client() as client:
-    lab = client.start(api.LabSpec(
-        topology=api.TopologySource(path="basic.clab.yml")))
+    lab = client.start(api.LabSpec(topology=source(topology)))
     result = lab.node("client").exec("ping", "-c", "1", "192.0.2.2")
     result.check_returncode()
 ```
 
-Python can be installed directly from a Git checkout:
+Python bindings are generated from the exact schema version pinned in `go.mod`;
+`make generate-containerlab` regenerates them reproducibly. Aliases such as
+`network_mode` serialize to native `network-mode`. Unset schema defaults are not
+sent. Arbitrary fields are retained where the upstream schema permits them, and
+closed schema objects reject unknown fields.
+Generated models are not a replacement for Containerlab's own validation;
+kind-specific conditional constraints are still validated during deployment.
+
+Python can be installed directly from a Git checkout (select the branch/commit
+containing the bindings when testing unreleased changes):
 
 ```sh
-python -m pip install 'git+https://github.com/AppMana/labcontainers.git@v0.2.0-alpha.2'
+python -m pip install 'git+https://github.com/AppMana/labcontainers.git@<commit>'
 ```
 
 ## Node.js
+
+The npm transport remains supported; schema-generated topology objects in this
+change are provided for Go and Python.
 
 ```js
 const {Client} = require('@appmana/labcontainers');
@@ -173,6 +225,7 @@ and ISO requirements.
 
 ```sh
 make generate
+make generate-containerlab
 make test
 make build
 ```

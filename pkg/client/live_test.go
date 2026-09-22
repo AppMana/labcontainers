@@ -9,6 +9,10 @@ import (
 	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
+	clab "github.com/appmana/labcontainers/pkg/containerlab"
+	"github.com/srl-labs/containerlab/core"
+	"github.com/srl-labs/containerlab/links"
+	"github.com/srl-labs/containerlab/types"
 )
 
 // TestLive exercises the public Go SDK through a real labd, Containerlab, and
@@ -32,9 +36,18 @@ func TestLive(t *testing.T) {
 			t.Errorf("close: %v", err)
 		}
 	}()
-	lab, err := c.Start(ctx, &labv1.LabSpec{Topology: &labv1.TopologySource{
-		Source: &labv1.TopologySource_Path{Path: filepath.Join(root, "examples", "basic", "basic.clab.yml")},
-	}}, 5*time.Minute)
+	topology, err := clab.Source(&core.Config{Name: "basic", Topology: &types.Topology{
+		Defaults: &types.NodeDefinition{Kind: "linux", Image: "alpine:3.20", NetworkMode: "none"},
+		Nodes: map[string]*types.NodeDefinition{
+			"client": {Exec: []string{"ip addr add 192.0.2.1/24 dev eth0"}},
+			"server": {Exec: []string{"ip addr add 192.0.2.2/24 dev eth0"}},
+		},
+		Links: []*links.LinkDefinition{{Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth0", "server:eth0"}}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lab, err := c.Start(ctx, &labv1.LabSpec{Topology: topology}, 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +57,27 @@ func TestLive(t *testing.T) {
 	}
 	if result.GetExitCode() != 0 {
 		t.Fatalf("ping exited %d: %s", result.GetExitCode(), result.GetStderr())
+	}
+	fault, err := lab.SetLink(ctx, "client", "eth0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "1", "192.0.2.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GetExitCode() == 0 {
+		t.Fatal("reachability survived cutting the only declared path")
+	}
+	if err := fault.Revert(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "2", "192.0.2.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GetExitCode() != 0 {
+		t.Fatalf("reachability not restored: %s", result.GetStderr())
 	}
 }
 
@@ -69,9 +103,9 @@ func TestLiveVM(t *testing.T) {
 			t.Errorf("close: %v", err)
 		}
 	}()
-	topology := []byte("name: ignored\ntopology:\n  nodes:\n    vm:\n      kind: generic_vm\n      image: labcontainers/vm-ubuntu:jammy\n      network-mode: none\n    peer:\n      kind: linux\n      image: alpine:3.20\n      network-mode: none\n  links:\n    - endpoints: [vm:eth1, peer:eth1]\n")
+	topology := vmTopology(t, "labcontainers/vm-ubuntu:jammy")
 	lab, err := c.Start(ctx, &labv1.LabSpec{
-		Topology: &labv1.TopologySource{Source: &labv1.TopologySource_Yaml{Yaml: topology}},
+		Topology: topology,
 		Nodes: map[string]*labv1.NodeExtension{"vm": {
 			Control: "qga",
 			Disks:   []*labv1.Disk{{Name: "volume", SizeBytes: 1 << 30}},
@@ -110,4 +144,22 @@ func TestLiveVM(t *testing.T) {
 	if got := string(result.GetStdout()); got != "durable" {
 		t.Fatalf("marker after abrupt power cycle = %q", got)
 	}
+}
+
+// Both operating-system tests use the same native Containerlab objects. The
+// generic SDK does not impose a Kubernetes fixture or its own VM node schema.
+func vmTopology(t *testing.T, image string) *labv1.TopologySource {
+	t.Helper()
+	source, err := clab.Source(&core.Config{Name: "vm", Topology: &types.Topology{
+		Defaults: &types.NodeDefinition{NetworkMode: "none"},
+		Nodes: map[string]*types.NodeDefinition{
+			"vm":   {Kind: "generic_vm", Image: image},
+			"peer": {Kind: "linux", Image: "alpine:3.20"},
+		},
+		Links: []*links.LinkDefinition{{Link: &links.LinkBriefRaw{Endpoints: []string{"vm:eth1", "peer:eth1"}}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
 }

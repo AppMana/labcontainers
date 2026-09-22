@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,10 @@ import (
 	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
+	clab "github.com/appmana/labcontainers/pkg/containerlab"
+	"github.com/srl-labs/containerlab/core"
+	"github.com/srl-labs/containerlab/links"
+	"github.com/srl-labs/containerlab/types"
 )
 
 // TestLiveVMCrashRestoresRuntimeBridgeMembership proves that restarting a VM
@@ -23,16 +28,6 @@ func TestLiveVMCrashRestoresRuntimeBridgeMembership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	networkDir := t.TempDir()
-	if err := os.Chmod(networkDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	networkPath := filepath.Join(networkDir, "vm.yaml")
-	network := []byte("version: 2\nethernets:\n  topology:\n    match:\n      name: 'en*'\n    addresses: [192.0.2.1/24]\n    optional: true\n")
-	if err := os.WriteFile(networkPath, network, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	labdPath := os.Getenv("LABCONTAINERS_LABD")
@@ -53,29 +48,30 @@ func TestLiveVMCrashRestoresRuntimeBridgeMembership(t *testing.T) {
 		}
 	}()
 
-	topology := []byte(fmt.Sprintf(`name: ignored
-topology:
-  nodes:
-    vm:
-      kind: generic_vm
-      image: %q
-      network-mode: none
-      binds:
-        - %q
-    switch:
-      kind: linux
-      image: alpine:3.20
-      network-mode: none
-    peer:
-      kind: linux
-      image: alpine:3.20
-      network-mode: none
-  links:
-    - endpoints: [vm:eth1, switch:eth1]
-    - endpoints: [peer:eth1, switch:eth2]
-`, vmImage, networkPath+":/extra-network.yaml:ro"))
+	// Configuration is part of native node startup, including a fresh guest
+	// when vrnetlab reconciliation recreates the wrapper. It uses serial QGA,
+	// not a management connection or a caller-side repair after the crash.
+	network := base64.StdEncoding.EncodeToString([]byte("[Match]\nName=en*\n[Network]\nAddress=192.0.2.1/24\nDHCP=no\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n"))
+	configureNetwork := "cloud-init status --wait >/dev/null; printf %s " + network + " | base64 -d > /etc/systemd/network/00-labcontainers.network; systemctl restart systemd-networkd"
+	// QGA may not be listening when Containerlab's exec stage first runs.
+	startup := fmt.Sprintf("i=0; until /labcontainers-guest exec 10s 0 sh -ec %q; do i=$((i+1)); [ \"$i\" -lt 18 ] || exit 1; sleep 2; done", configureNetwork)
+	topology, err := clab.Source(&core.Config{Name: "bridge-restart", Topology: &types.Topology{
+		Defaults: &types.NodeDefinition{NetworkMode: "none"},
+		Nodes: map[string]*types.NodeDefinition{
+			"vm":     {Kind: "generic_vm", Image: vmImage, Exec: []string{fmt.Sprintf("sh -ec %q", startup)}},
+			"switch": {Kind: "linux", Image: "alpine:3.20"},
+			"peer":   {Kind: "linux", Image: "alpine:3.20"},
+		},
+		Links: []*links.LinkDefinition{
+			{Link: &links.LinkBriefRaw{Endpoints: []string{"vm:eth1", "switch:eth1"}}},
+			{Link: &links.LinkBriefRaw{Endpoints: []string{"peer:eth1", "switch:eth2"}}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	lab, err := c.Start(ctx, &labv1.LabSpec{
-		Topology: &labv1.TopologySource{Source: &labv1.TopologySource_Yaml{Yaml: topology}},
+		Topology: topology,
 		Nodes:    map[string]*labv1.NodeExtension{"vm": {Control: "qga"}},
 	}, 10*time.Minute)
 	if err != nil {
@@ -130,7 +126,25 @@ topology:
 	}
 
 	waitVM()
+	execOK("vm", "sh", "-ec", `set -- /sys/class/net/*; test "$#" -eq 2; test -z "$(ip -4 route show default)"; test -z "$(ip -6 route show default)"`)
 	waitPing("before crash")
+	fault, err := lab.SetLink(ctx, "switch", "eth1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, err := lab.Node("peer").Exec(ctx, "ping", "-c", "1", "-W", "1", "192.0.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.GetExitCode() == 0 {
+		t.Fatal("VM remained reachable after its only declared path was cut")
+	}
+	execOK("vm", "true") // Serial QGA control survives the dataplane cut.
+	if err := fault.Revert(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitPing("after restoring declared path")
+	t.Log("one guest NIC, no default routes; cutting the declared path breaks reachability but preserves QGA")
 	if err := vm.Crash(ctx); err != nil {
 		t.Fatal(err)
 	}

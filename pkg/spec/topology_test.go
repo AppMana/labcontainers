@@ -20,7 +20,7 @@ topology:
   links:
     - endpoints: ["n1:eth0", "lan:n1"]
 `)
-	p, err := Prepare(in, "suite/one", "session-1", false)
+	p, err := Prepare(in, "suite/one", "session-1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,16 +55,19 @@ topology:
 	}
 }
 
-func TestPrepareRejectsImplicitManagementNetwork(t *testing.T) {
-	_, err := Prepare([]byte(`name: unsafe
+func TestPrepareDisablesImplicitManagementNetwork(t *testing.T) {
+	p, err := Prepare([]byte(`name: safe
 topology:
   nodes:
     n1:
       kind: linux
       image: alpine:3
 `), "test", "id", false)
-	if err == nil || !strings.Contains(err.Error(), "network-mode") {
-		t.Fatalf("expected network-mode error, got %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(p.YAML), "network-mode: none") || len(p.IsolatedNodes) != 1 {
+		t.Fatalf("omitted network-mode enabled implicit connectivity: %s", p.YAML)
 	}
 }
 

@@ -11,20 +11,45 @@ import (
 	labv1 "github.com/appmana/labcontainers/api/v1"
 	"github.com/appmana/labcontainers/internal/engine"
 	"github.com/appmana/labcontainers/internal/session"
+	clab "github.com/appmana/labcontainers/pkg/containerlab"
+	"github.com/srl-labs/containerlab/core"
+	"github.com/srl-labs/containerlab/types"
 )
 
 type fakeBackend struct {
 	calls       []string
 	execResults []engine.Result
+	proofNodes  []string
 }
 
 func (f *fakeBackend) call(value string)                          { f.calls = append(f.calls, value) }
 func (f *fakeBackend) Doctor(context.Context) error               { f.call("doctor"); return nil }
 func (f *fakeBackend) Validate(_ context.Context, _ string) error { f.call("validate"); return nil }
 func (f *fakeBackend) Deploy(_ context.Context, _ string) error   { f.call("deploy"); return nil }
-func (f *fakeBackend) ProofIsolation(_ context.Context, _ string, _ []string) error {
+func (f *fakeBackend) ProofIsolation(_ context.Context, _ string, nodes []string) error {
 	f.call("proof")
+	f.proofNodes = append([]string(nil), nodes...)
 	return nil
+}
+
+func TestExternalOptInRetainsIsolationChecks(t *testing.T) {
+	s, backend := testServer(t)
+	source, err := clab.Source(&core.Config{Name: "mixed", Topology: &types.Topology{
+		Nodes: map[string]*types.NodeDefinition{
+			"isolated": {Kind: "linux", Image: "alpine:3.20"},
+			"wan":      {Kind: "linux", Image: "alpine:3.20", NetworkMode: "host"},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.CreateSession(context.Background(), &labv1.CreateSessionRequest{Spec: &labv1.LabSpec{Topology: source, AllowExternalAccess: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(backend.proofNodes, []string{"isolated"}) {
+		t.Fatalf("unexpected runtime checks: %v", backend.proofNodes)
+	}
 }
 func (f *fakeBackend) Destroy(_ context.Context, _ string) error { f.call("destroy"); return nil }
 func (f *fakeBackend) Lifecycle(_ context.Context, _, node, action string) error {
