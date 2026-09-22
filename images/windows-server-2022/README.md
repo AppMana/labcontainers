@@ -23,7 +23,7 @@ packer build -on-error=abort \
 cd ..
 cp packer/output/windows-server-2022/windows-server-2022-labcontainers.qcow2 .
 CGO_ENABLED=0 go build -o labcontainers-guest ../../cmd/labcontainers-guest
-docker build -t labcontainers/windows-server-2022:latest .
+docker build --build-context labcontainers-common=../common -t labcontainers/windows-server-2022:latest .
 ```
 
 The runtime VM has no implicit management NIC. QGA travels over virtio-serial;
@@ -31,6 +31,11 @@ all Ethernet adapters are created from topology links. Labcontainers data disks
 are attached as VirtIO block devices and remain independent of the disposable
 OS overlay, so disk-persistence and machine-replacement tests use the same API
 as Linux VMs.
+
+NIC count comes from Containerlab's native `CLAB_INTFS`, including zero. Use
+contiguous `eth1` through `ethN` endpoints; sparse numbering is rejected rather
+than letting vrnetlab add placeholder adapters. Optional `--nics` must match
+that count. QEMU's default NIC is explicitly disabled.
 
 Project-specific layers remain in their owning repositories. Pass their
 PowerShell entry points through `provisioning_scripts` to bake Kubernetes,
