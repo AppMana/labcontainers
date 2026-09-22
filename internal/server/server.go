@@ -455,7 +455,7 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 		return nil, failure.Err()
 	}
 	s.event(r, "fault.applied", f)
-	return &labv1.Fault{Id: id, Kind: f.Kind, Active: true}, nil
+	return protoFault(f), nil
 }
 
 func (s *Server) RevertFault(ctx context.Context, ref *labv1.FaultRef) (*labv1.Empty, error) {
@@ -732,7 +732,21 @@ func protoSession(r *session.Record) *labv1.Session {
 		nodes = append(nodes, &labv1.Node{Name: n.Name, State: n.State})
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
-	return &labv1.Session{Id: r.ID, Name: r.Name, State: r.State, TopologyPath: r.TopologyPath, ArtifactDirectory: r.ArtifactDirectory, ExpiresUnix: r.Expires.Unix(), ResumeToken: r.ResumeToken, Nodes: nodes}
+	faults := make([]*labv1.Fault, 0, len(r.Faults))
+	for _, fault := range r.Faults {
+		faults = append(faults, protoFault(fault))
+	}
+	sort.Slice(faults, func(i, j int) bool { return faults[i].Id < faults[j].Id })
+	return &labv1.Session{Id: r.ID, Name: r.Name, State: r.State, TopologyPath: r.TopologyPath, ArtifactDirectory: r.ArtifactDirectory, ExpiresUnix: r.Expires.Unix(), ResumeToken: r.ResumeToken, Nodes: nodes, Faults: faults}
+}
+
+func protoFault(f *session.Fault) *labv1.Fault {
+	result := &labv1.Fault{Id: f.ID, Kind: f.Kind, Active: f.Active, Node: f.Node, Interface: f.Interface}
+	if f.Kind == "link-state" {
+		value := f.RestoreUp
+		result.RestoreUp = &value
+	}
+	return result
 }
 
 func randomID(bytes int) (string, error) {

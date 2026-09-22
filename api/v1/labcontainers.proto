@@ -96,6 +96,8 @@ message Session {
   int64 expires_unix = 6;
   string resume_token = 7;
   repeated Node nodes = 8;
+  // Recovery records, including faults whose application outcome is uncertain.
+  repeated Fault faults = 9;
 }
 
 message DestroySessionRequest {
@@ -199,6 +201,12 @@ message Fault {
   string id = 1;
   string kind = 2;
   bool active = 3;
+  string node = 4;
+  string interface = 5;
+  // Observed administrative state restored by a link-state fault's rollback.
+  // Absent for other fault kinds. Active means rollback remains outstanding,
+  // not that backend application was confirmed successful.
+  optional bool restore_up = 6;
 }
 
 message TimelineAction {

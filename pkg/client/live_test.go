@@ -255,6 +255,22 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	inspection, err := c.RPC().GetSession(ctx, &labv1.SessionRef{Id: lab.ID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, recovery := range inspection.Faults {
+		if recovery.Id == fault.ID() {
+			found = true
+			if !recovery.Active || recovery.Node != "client" || recovery.Interface != "eth0" || recovery.RestoreUp == nil || !recovery.GetRestoreUp() {
+				t.Fatalf("incomplete live recovery record: %v", recovery)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("live session inspection omitted active link fault")
+	}
 	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "1", "192.0.2.2")
 	if err != nil {
 		t.Fatal(err)

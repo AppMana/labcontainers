@@ -73,6 +73,20 @@ func TestFaultWriteAheadAndRecoverableBackendFailure(t *testing.T) {
 	if faultID == "" {
 		t.Fatal("backend error has no machine-readable rollback identity")
 	}
+	// Simulate a new daemon instance: discovery must use public session
+	// inspection, not the original error object or a client's cached handle.
+	s = New(s.Store, backend)
+	inspection, err := s.GetSession(context.Background(), &labv1.SessionRef{Id: lab.Id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inspection.Faults) != 1 {
+		t.Fatal("session inspection hid outstanding recovery records")
+	}
+	recovery := inspection.Faults[0]
+	if recovery.Id != faultID || recovery.Node != "n1" || recovery.Interface != "eth0" || !recovery.Active || recovery.RestoreUp == nil || !recovery.GetRestoreUp() {
+		t.Fatalf("incomplete recovery record: %v", recovery)
+	}
 	backend.linkSetHook = nil
 	if _, err := s.RevertFault(context.Background(), &labv1.FaultRef{SessionId: lab.Id, Id: faultID}); err != nil {
 		t.Fatal(err)
@@ -83,6 +97,10 @@ func TestFaultWriteAheadAndRecoverableBackendFailure(t *testing.T) {
 	}
 	if record.Faults[faultID].Active || !backend.linkUp["n1:eth0"] {
 		t.Fatal("explicit recovery failed")
+	}
+	inspection, err = s.GetSession(context.Background(), &labv1.SessionRef{Id: lab.Id})
+	if err != nil || len(inspection.Faults) != 1 || inspection.Faults[0].Active {
+		t.Fatalf("reverted fault status not observable: %v %v", inspection, err)
 	}
 }
 

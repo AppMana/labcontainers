@@ -268,6 +268,15 @@ needed. `fault.prepared` and `fault.apply_failed` events distinguish this case
 from a successfully applied fault. Reconciliation remains blocked until active
 faults have been reverted.
 
+After reconnecting, use generated `GetSession(SessionRef{id: ...})` to discover
+the session's `faults` records. Each includes its ID, kind, node, interface,
+active status, and optional `restore_up` for link-state faults. Explicit false
+means the endpoint was down; an absent value means the field does not apply.
+Active includes an uncertain or interrupted application, so it is a recovery
+obligation rather than proof of current packet behavior. Reverted records remain
+visible with `active=false`. This inspection works from persisted session state
+after a daemon restart, without asking tests to read internal files.
+
 ## Kubernetes helpers
 
 The optional `pkg/kubernetes/kube` package contains the shared bastion-side
