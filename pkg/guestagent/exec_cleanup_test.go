@@ -5,11 +5,71 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCleanupReapsTargetWhileTerminationHelperIsStillRunning(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reaped := make(chan struct{})
+	go func() {
+		decoder, encoder := json.NewDecoder(server), json.NewEncoder(server)
+		killed, helperPolls := false, 0
+		for {
+			var request struct {
+				Execute   string `json:"execute"`
+				Arguments struct {
+					PID int `json:"pid"`
+				} `json:"arguments"`
+			}
+			if decoder.Decode(&request) != nil {
+				return
+			}
+			var reply any
+			switch request.Execute {
+			case "guest-exec":
+				killed = true
+				reply = map[string]any{"pid": 43}
+			case "guest-exec-status":
+				if request.Arguments.PID == 42 {
+					reply = map[string]any{"exited": killed}
+					if killed {
+						close(reaped)
+					}
+				} else if request.Arguments.PID == 43 {
+					helperPolls++
+					reply = map[string]any{"exited": false}
+					if helperPolls == 2 {
+						cancel()
+					}
+				} else {
+					return
+				}
+			default:
+				return
+			}
+			if encoder.Encode(map[string]any{"return": reply}) != nil {
+				return
+			}
+		}
+	}()
+	a := &Agent{conn: client, reader: bufio.NewReader(client), os: "windows"}
+	if err := a.cleanupExec(ctx, 42); !errors.Is(err, context.Canceled) {
+		t.Fatalf("hung helper must remain a cleanup failure: %v", err)
+	}
+	select {
+	case <-reaped:
+	default:
+		t.Fatal("finished target was left unreaped while cleanup waited for the termination helper")
+	}
+}
 
 // QGA keeps exited process metadata until guest-exec-status reaps it. Windows
 // can reuse the numeric PID meanwhile; QGA returns the first matching record.

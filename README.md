@@ -115,7 +115,8 @@ operation. A timeout/RPC error may not include partial command output: redirect
 diagnostics to a guest file and collect it before destroying the session.
 QGA retains exited-command metadata until `guest-exec-status` reaps it. Timeout
 cleanup checks/reaps an already-exited target first; otherwise it terminates
-the target and polls both target and termination-helper records. Cleanup errors
+the target and interleaves polling of target and termination-helper records,
+starting with the target so a slow helper cannot starve target reaping. Cleanup errors
 are included in the failed command result. This prevents the reproduced case
 where Windows reuses an unreaped PID and a later setup command receives an old
 readiness probe's output. Run

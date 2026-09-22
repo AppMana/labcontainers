@@ -227,18 +227,30 @@ func (a *Agent) execExited(ctx context.Context, pid int) (bool, error) {
 	return state.Exited, err
 }
 
-func (a *Agent) reapExec(ctx context.Context, pid int) error {
-	for {
-		exited, err := a.execExited(ctx, pid)
-		if err != nil || exited {
-			return err
+func (a *Agent) reapExec(ctx context.Context, pids ...int) error {
+	pending := append([]int(nil), pids...)
+	for len(pending) != 0 {
+		next := pending[:0]
+		for _, pid := range pending {
+			exited, err := a.execExited(ctx, pid)
+			if err != nil {
+				return fmt.Errorf("reap PID %d: %w", pid, err)
+			}
+			if !exited {
+				next = append(next, pid)
+			}
+		}
+		pending = next
+		if len(pending) == 0 {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("unreaped PIDs %v: %w", pending, ctx.Err())
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+	return nil
 }
 
 func (a *Agent) cleanupExec(ctx context.Context, pid int) error {
@@ -264,13 +276,10 @@ func (a *Agent) cleanupExec(ctx context.Context, pid int) error {
 	if helper.PID <= 0 {
 		return fmt.Errorf("cleanup command returned no process ID")
 	}
-	// The cleanup command also owns a QGA record, even without output capture.
-	helperErr := a.reapExec(ctx, helper.PID)
-	targetErr := a.reapExec(ctx, pid)
-	if helperErr != nil {
-		return fmt.Errorf("reap cleanup PID %d: %w", helper.PID, helperErr)
-	}
-	return targetErr
+	// Poll the target first and interleave both records. A slow helper must not
+	// consume the entire cleanup deadline while an exited target remains stale.
+	// The helper owns a QGA record even without output capture.
+	return a.reapExec(ctx, pid, helper.PID)
 }
 
 func (a *Agent) Execute(ctx context.Context, argv []string, input []byte) (result Result, resultErr error) {
