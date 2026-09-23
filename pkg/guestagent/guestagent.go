@@ -29,6 +29,8 @@ const (
 
 type Agent struct {
 	mu     sync.Mutex
+	once   sync.Once
+	gate   chan struct{}
 	conn   net.Conn
 	reader *bufio.Reader
 	Socket string
@@ -119,8 +121,13 @@ func dialUntilReady(ctx context.Context, network, address string) (net.Conn, err
 }
 
 func (a *Agent) Call(ctx context.Context, command string, args, into any) (err error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.once.Do(func() { a.gate = make(chan struct{}, 1) })
+	select {
+	case a.gate <- struct{}{}:
+		defer func() { <-a.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	defer func() {
 		if err != nil && a.conn != nil {
 			_ = a.conn.Close()
@@ -130,12 +137,25 @@ func (a *Agent) Call(ctx context.Context, command string, args, into any) (err e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if a.conn == nil {
+	newConnection := a.conn == nil
+	if newConnection {
 		a.conn, err = dialUntilReady(ctx, "unix", a.socket())
 		if err != nil {
 			return err
 		}
 		a.reader = bufio.NewReader(a.conn)
+	}
+	// Socket deadlines alone do not react to cancellation before a deadline.
+	// Stop the callback before releasing the gate to the next request.
+	conn := a.conn
+	interrupted := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()); close(interrupted) })
+	defer func() {
+		if !stop() {
+			<-interrupted
+		}
+	}()
+	if newConnection {
 		_ = a.conn.SetDeadline(callDeadline(ctx, 10*time.Minute))
 		token := time.Now().UnixNano() & ((1 << 52) - 1)
 		request, _ := marshalCommand("guest-sync-delimited", map[string]any{"id": token})

@@ -226,6 +226,17 @@ func (c *Containerlab) Exec(ctx context.Context, lab, node, control string, time
 	if len(argv) == 0 {
 		return Result{}, errors.New("argv is empty")
 	}
+	if timeout > 0 {
+		// Bound host-side container lookup and Docker exec too, not only the
+		// guest process. QGA gets a small, bounded cleanup allowance.
+		budget := timeout
+		if control == "qga" {
+			budget += 10 * time.Second
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
 	container, err := c.containerID(ctx, lab, node)
 	if err != nil {
 		return Result{}, err
