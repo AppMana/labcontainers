@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import xml.etree.ElementTree as ET
 
 spec = importlib.util.spec_from_file_location("vm_interfaces", Path(__file__).resolve().parents[2] / "images/common/interfaces.py")
 interfaces = importlib.util.module_from_spec(spec)
@@ -12,6 +13,12 @@ spec.loader.exec_module(interfaces)
 
 
 class VMInterfacesTest(unittest.TestCase):
+    def test_windows_image_uses_utc_rtc_convention(self):
+        answer = Path(__file__).resolve().parents[2] / "images/windows-server-2022/packer/autounattend.xml.pkrtpl"
+        root = ET.parse(answer).getroot()
+        zones = root.findall(".//{urn:schemas-microsoft-com:unattend}TimeZone")
+        self.assertEqual([zone.text for zone in zones], ["UTC"])
+
     def test_native_control_listeners_are_loopback_only(self):
         args = ["qemu-system-x86_64",
                 "-chardev socket,id=monitor0,host=::,port=4000,server=on,wait=off",

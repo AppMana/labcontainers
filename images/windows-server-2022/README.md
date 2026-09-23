@@ -5,6 +5,13 @@ not redistribute Windows. Packer installs current updates, signed virtio
 drivers, QEMU Guest Agent, and build-time WinRM, then generalizes and compacts the
 qcow2. Labcontainers creates a disposable copy-on-write overlay per VM.
 
+New images use UTC, matching QEMU's default UTC RTC. An older image configured
+for Pacific local hardware time booted seven hours ahead in an isolated live
+test, despite having the correct Windows kernel. Changing the runtime wrapper
+does not repair that guest setting: rebuild the image or explicitly set its
+time zone and synchronize its clock through QGA before starting Kubernetes.
+Do not add an NTP/management network to hide the clock mismatch.
+
 The design follows the useful parts of Google's image pipeline: bake drivers
 and guest control into a generalized base, keep instance identity and test
 configuration in first-boot bootstrap, and use an out-of-band guest agent for
