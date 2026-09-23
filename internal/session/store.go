@@ -38,17 +38,18 @@ type Fault struct {
 }
 
 type Record struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	State             string            `json:"state"`
-	TopologyPath      string            `json:"topologyPath"`
-	ArtifactDirectory string            `json:"artifactDirectory"`
-	Expires           time.Time         `json:"expires"`
-	ResumeToken       string            `json:"resumeToken,omitempty"`
-	Kept              bool              `json:"kept,omitempty"`
-	Nodes             map[string]*Node  `json:"nodes"`
-	Faults            map[string]*Fault `json:"faults,omitempty"`
-	Labels            map[string]string `json:"labels,omitempty"`
+	AllowExternalAccess bool              `json:"allowExternalAccess,omitempty"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	State               string            `json:"state"`
+	TopologyPath        string            `json:"topologyPath"`
+	ArtifactDirectory   string            `json:"artifactDirectory"`
+	Expires             time.Time         `json:"expires"`
+	ResumeToken         string            `json:"resumeToken,omitempty"`
+	Kept                bool              `json:"kept,omitempty"`
+	Nodes               map[string]*Node  `json:"nodes"`
+	Faults              map[string]*Fault `json:"faults,omitempty"`
+	Labels              map[string]string `json:"labels,omitempty"`
 }
 
 type Store struct {

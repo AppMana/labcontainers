@@ -10,6 +10,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/srl-labs/containerlab/links"
+	"github.com/srl-labs/containerlab/types"
+	yamlv2 "gopkg.in/yaml.v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -67,6 +70,9 @@ type Prepared struct {
 	Name      string
 	Nodes     []string
 	TestNodes []string
+	// IsolatedNodes retain runtime isolation checks even when the topology
+	// deliberately connects other nodes to an external network.
+	IsolatedNodes []string
 }
 
 type PrepareOptions struct {
@@ -151,10 +157,31 @@ func PrepareWithOptions(input []byte, sessionName, sessionID string, allowExtern
 		return nil, errors.New("topology must define at least one node")
 	}
 
-	if !allowExternal {
-		ensureMgmtSkipped(root)
+	if mgmt := mappingValue(root, "mgmt"); mgmt != nil && mgmt.Kind != yaml.MappingNode && mgmt.Tag != "!!null" {
+		return nil, errors.New("mgmt must be a mapping")
 	}
-	if err := validateAndLabel(topology, nodes, sessionID, allowExternal); err != nil {
+	ensureMgmtSkipped(root)
+	// Resolve inheritance using Containerlab itself, not a competing copy of
+	// its precedence rules. Retain the syntax tree for lossless pass-through.
+	rawTopology, err := yaml.Marshal(topology)
+	if err != nil {
+		return nil, err
+	}
+	native := types.NewTopology()
+	if err := yamlv2.Unmarshal(rawTopology, native); err != nil {
+		return nil, fmt.Errorf("decode native Containerlab topology: %w", err)
+	}
+	if native.Defaults == nil {
+		native.Defaults = &types.NodeDefinition{}
+	}
+	for scope, definitions := range map[string]map[string]*types.NodeDefinition{"kinds": native.Kinds, "groups": native.Groups} {
+		for name, definition := range definitions {
+			if definition == nil {
+				return nil, fmt.Errorf("%s.%s must be a mapping", scope, name)
+			}
+		}
+	}
+	if err := validateAndLabel(nodes, native, sessionID, allowExternal); err != nil {
 		return nil, err
 	}
 	if options.BaseDir != "" {
@@ -177,22 +204,25 @@ func PrepareWithOptions(input []byte, sessionName, sessionID string, allowExtern
 
 	names := make([]string, 0, len(nodes.Content)/2)
 	testNodes := make([]string, 0, len(nodes.Content)/2)
-	defaults := mappingValue(topology, "defaults")
-	groups := mappingValue(topology, "groups")
+	isolatedNodes := make([]string, 0, len(nodes.Content)/2)
 	for i := 0; i < len(nodes.Content); i += 2 {
-		name, node := nodes.Content[i].Value, nodes.Content[i+1]
+		name := nodes.Content[i].Value
 		names = append(names, name)
-		if resolvedKind(node, groups, defaults) != "bridge" {
+		if kind := native.GetNodeKind(name); kind != "bridge" && kind != "ovs-bridge" {
 			testNodes = append(testNodes, name)
+			if native.GetNodeNetworkMode(name) == "none" {
+				isolatedNodes = append(isolatedNodes, name)
+			}
 		}
 	}
 	sort.Strings(names)
 	sort.Strings(testNodes)
+	sort.Strings(isolatedNodes)
 	out, err := yaml.Marshal(&doc)
 	if err != nil {
 		return nil, fmt.Errorf("render private topology: %w", err)
 	}
-	return &Prepared{YAML: out, Name: name, Nodes: names, TestNodes: testNodes}, nil
+	return &Prepared{YAML: out, Name: name, Nodes: names, TestNodes: testNodes, IsolatedNodes: isolatedNodes}, nil
 }
 
 func absolutizeBinds(parent *yaml.Node, baseDir string) error {
@@ -226,25 +256,38 @@ func absolutizeBinds(parent *yaml.Node, baseDir string) error {
 	return nil
 }
 
-func validateAndLabel(topology, nodes *yaml.Node, sessionID string, allowExternal bool) error {
-	defaults := mappingValue(topology, "defaults")
-	kinds := mappingValue(topology, "kinds")
-	groups := mappingValue(topology, "groups")
+func validateAndLabel(nodes *yaml.Node, native *types.Topology, sessionID string, allowExternal bool) error {
 	for i := 0; i < len(nodes.Content); i += 2 {
 		name, node := nodes.Content[i].Value, nodes.Content[i+1]
+		if node.Tag == "!!null" {
+			*node = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		}
 		if node.Kind != yaml.MappingNode {
 			return fmt.Errorf("node %q must be a mapping", name)
 		}
-		groupName := scalarValue(node, "group")
-		group := childMapping(groups, groupName)
-		kind := resolvedKind(node, groups, defaults)
-		kindDef := childMapping(kinds, kind)
-		mode := inheritedScalar("network-mode", node, group, kindDef, defaults)
-		if !allowExternal && kind != "bridge" && strings.ToLower(mode) != "none" {
+		kind := native.GetNodeKind(name)
+		if !allowExternal && (kind == "bridge" || kind == "ovs-bridge") {
+			return fmt.Errorf("node %q borrows a host %s and requires allowExternalAccess", name, kind)
+		}
+		mode := native.GetNodeNetworkMode(name)
+		if kind != "bridge" && kind != "ovs-bridge" && mode == "" {
+			// Omission must not turn on Docker's implicit management NIC.
+			setScalar(node, "network-mode", "none")
+			if native.Nodes[name] == nil {
+				native.Nodes[name] = &types.NodeDefinition{}
+			}
+			native.Nodes[name].NetworkMode = "none"
+			mode = "none"
+		}
+		if !allowExternal && kind != "bridge" && kind != "ovs-bridge" && mode != "none" {
 			return fmt.Errorf("node %q resolves network-mode to %q; isolated labs require network-mode: none", name, mode)
 		}
 		if !allowExternal {
-			if len(inheritedSequence("ports", node, group, kindDef, defaults)) != 0 {
+			_, ports, err := native.GetNodePorts(name)
+			if err != nil {
+				return fmt.Errorf("node %q ports: %w", name, err)
+			}
+			if len(ports) != 0 {
 				return fmt.Errorf("node %q publishes host ports in an isolated lab", name)
 			}
 		}
@@ -253,13 +296,26 @@ func validateAndLabel(topology, nodes *yaml.Node, sessionID string, allowExterna
 		setScalar(labels, "labcontainers.appmana.com/managed", "true")
 	}
 	if !allowExternal {
-		links := mappingValue(topology, "links")
-		if links != nil {
-			for _, link := range links.Content {
-				t := scalarValue(link, "type")
-				switch t {
-				case "host", "macvlan", "vxlan", "vxlan-stitch":
-					return fmt.Errorf("link type %q can leave the lab and requires allowExternalAccess", t)
+		for _, link := range native.Links {
+			if link == nil || link.Link == nil {
+				return errors.New("link must not be null")
+			}
+			switch t := link.Link.GetType(); t {
+			case links.LinkTypeHost, links.LinkTypeMgmtNet, links.LinkTypeMacVLan, links.LinkTypeVxlan, links.LinkTypeVxlanStitch:
+				return fmt.Errorf("link type %q can leave the lab and requires allowExternalAccess", t)
+			}
+			// Extended veth endpoints can also refer directly to the host or
+			// management namespace, without an external link discriminator.
+			var endpoints []*links.EndpointRaw
+			switch raw := link.Link.(type) {
+			case *links.LinkVEthRaw:
+				endpoints = raw.Endpoints
+			case *links.LinkVEthStitchedRaw:
+				endpoints = raw.Endpoints
+			}
+			for _, endpoint := range endpoints {
+				if endpoint != nil && (endpoint.Node == "host" || endpoint.Node == "mgmt-net") {
+					return fmt.Errorf("endpoint %q can leave the lab and requires allowExternalAccess", endpoint.Node)
 				}
 			}
 		}
@@ -267,37 +323,9 @@ func validateAndLabel(topology, nodes *yaml.Node, sessionID string, allowExterna
 	return nil
 }
 
-func resolvedKind(node, groups, defaults *yaml.Node) string {
-	return inheritedScalar("kind", node, childMapping(groups, scalarValue(node, "group")), defaults)
-}
-
 func ensureMgmtSkipped(root *yaml.Node) {
 	mgmt := ensureMapping(root, "mgmt")
 	setBool(mgmt, "skip-when-unused", true)
-}
-
-func inheritedScalar(key string, levels ...*yaml.Node) string {
-	for _, n := range levels {
-		if v := scalarValue(n, key); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func inheritedSequence(key string, levels ...*yaml.Node) []string {
-	for _, n := range levels {
-		v := mappingValue(n, key)
-		if v == nil {
-			continue
-		}
-		var out []string
-		for _, item := range v.Content {
-			out = append(out, item.Value)
-		}
-		return out
-	}
-	return nil
 }
 
 func mappingRoot(doc *yaml.Node) (*yaml.Node, error) {
@@ -319,23 +347,11 @@ func mappingValue(n *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-func scalarValue(n *yaml.Node, key string) string {
-	v := mappingValue(n, key)
-	if v == nil || v.Kind != yaml.ScalarNode {
-		return ""
-	}
-	return v.Value
-}
-
-func childMapping(parent *yaml.Node, key string) *yaml.Node {
-	if key == "" {
-		return nil
-	}
-	return mappingValue(parent, key)
-}
-
 func ensureMapping(n *yaml.Node, key string) *yaml.Node {
-	if v := mappingValue(n, key); v != nil && v.Kind == yaml.MappingNode {
+	if v := mappingValue(n, key); v != nil {
+		if v.Kind != yaml.MappingNode {
+			*v = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		}
 		return v
 	}
 	k := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
@@ -345,7 +361,10 @@ func ensureMapping(n *yaml.Node, key string) *yaml.Node {
 }
 
 func ensureSequence(n *yaml.Node, key string) *yaml.Node {
-	if v := mappingValue(n, key); v != nil && v.Kind == yaml.SequenceNode {
+	if v := mappingValue(n, key); v != nil {
+		if v.Kind != yaml.SequenceNode {
+			*v = yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		}
 		return v
 	}
 	k := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}

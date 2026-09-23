@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
 import pathlib
 import shutil
 import subprocess
 import tempfile
+import threading
 from typing import Iterable
 
 import grpc
@@ -27,6 +29,7 @@ class Client:
         self.socket = socket or str(pathlib.Path(self._directory) / "labd.sock")
         if state_dir is None and self._directory is not None:
             state_dir = str(pathlib.Path(self._directory) / "state")
+        self._state_dir = state_dir
         argv = [labd, "--socket", self.socket, "--parent-pid", str(os.getpid())]
         if state_dir:
             argv += ["--state-dir", state_dir]
@@ -41,6 +44,7 @@ class Client:
         self = cls.__new__(cls)
         self._temporary = False
         self._directory = None
+        self._state_dir = None
         self.socket = socket
         self._process = None
         self._channel = grpc.insecure_channel("unix://" + socket, options=_GRPC_OPTIONS)
@@ -54,6 +58,16 @@ class Client:
         self._sessions[value.id] = value.resume_token
         return Session(self, value)
 
+    @property
+    def rpc(self) -> LabcontainersStub:
+        """Full transport API, including request fields and gRPC call options."""
+        return self._rpc
+
+    @property
+    def state_directory(self) -> str | None:
+        """Child daemon state root; retain this path when keeping a lab."""
+        return self._state_dir
+
     def resume(self, session_id: str) -> Session:
         value = self._rpc.GetSession(pb.SessionRef(id=session_id))
         self._sessions[value.id] = value.resume_token
@@ -63,15 +77,29 @@ class Client:
         error: Exception | None = None
         for session_id, token in list(self._sessions.items()):
             try:
-                self._rpc.DestroySession(pb.DestroySessionRequest(id=session_id, resume_token=token), timeout=120)
+                self._rpc.DestroySession(pb.DestroySessionRequest(id=session_id, resume_token=token, preserve_kept=True), timeout=120)
             except Exception as exc:
-                if error is None:
+                expired = isinstance(exc, grpc.RpcError) and exc.code() == grpc.StatusCode.NOT_FOUND
+                if error is None and not expired:
                     error = exc
             finally:
                 self._sessions.pop(session_id, None)
         self._channel.close()
         if self._process is not None:
+            # Keep paths stable while the detached daemon owns retained leases.
+            # Treat unreadable state as retained, not safe to erase.
+            retain = True
+            if self._state_dir:
+                try:
+                    retain = any((pathlib.Path(self._state_dir) / "sessions").iterdir())
+                except OSError:
+                    pass
             self._process.terminate()
+            if retain:
+                threading.Thread(target=self._process.wait, daemon=True).start()
+                if error is not None:
+                    raise error
+                return
             try:
                 self._process.wait(timeout=120)
             except subprocess.TimeoutExpired:
@@ -99,6 +127,21 @@ class Session:
 
     def node(self, name: str) -> Node:
         return Node(self, name)
+
+    def plan(self, topology: pb.TopologySource | None = None) -> dict:
+        """Return native Containerlab ApplyResult JSON; never apply the draft."""
+        request = pb.PlanTopologyRequest(session_id=self.id)
+        if topology is not None:
+            request.topology.CopyFrom(topology)
+        return json.loads(self.client.rpc.PlanTopology(request).json)
+
+    def apply(self, topology: pb.TopologySource | None, approved_plan: dict, *, nodes: dict | None = None) -> None:
+        """Recheck approved native impact, then reconcile; failures may be partial."""
+        self.value = self.client.rpc.ApplyTopology(pb.ApplyTopologyRequest(
+            session_id=self.id, topology=topology,
+            approved_plan=pb.NativeApplyResult(json=json.dumps(approved_plan).encode()),
+            nodes=nodes or {},
+        ))
 
     def keep(self, ttl_seconds: int = 86400) -> None:
         self.value = self.client._rpc.KeepSession(pb.KeepSessionRequest(id=self.id, ttl_seconds=ttl_seconds))
@@ -128,12 +171,20 @@ class Node:
     def _ref(self) -> pb.NodeRef:
         return pb.NodeRef(session_id=self.session.id, node=self.name)
 
+    @property
+    def ref(self) -> pb.NodeRef:
+        """Transport reference for calls through ``client.rpc``."""
+        return self._ref()
+
     def exec(self, *argv: str, stdin: bytes = b"", timeout_seconds: float = 120) -> subprocess.CompletedProcess[bytes]:
         value = self.session.client._rpc.Exec(pb.ExecRequest(node=self._ref(), argv=argv, stdin=stdin, timeout_millis=int(timeout_seconds * 1000)))
         return subprocess.CompletedProcess(argv, value.exit_code, value.stdout, value.stderr)
 
     def put(self, path: str, content: bytes, mode: int = 0o600) -> None:
         self.session.client._rpc.Put(pb.PutRequest(node=self._ref(), path=path, content=content, mode=mode))
+
+    def crash(self) -> None:
+        self._lifecycle(pb.CRASH)
 
     def power_off(self) -> None:
         self._lifecycle(pb.POWER_OFF)
@@ -144,8 +195,13 @@ class Node:
     def restart(self) -> None:
         self._lifecycle(pb.RESTART)
 
-    def replace(self, bootstrap: pb.BootstrapData | None = None) -> None:
+    def prepare_replacement(self, bootstrap: pb.BootstrapData | None = None) -> None:
+        """Remove this node and reset its disks; explicitly plan/apply to recreate."""
         self._lifecycle(pb.REPLACE, bootstrap)
+
+    def replace(self, bootstrap: pb.BootstrapData | None = None) -> None:
+        """Deprecated alias for prepare_replacement; does not deploy."""
+        self.prepare_replacement(bootstrap)
 
     def _lifecycle(self, action: int, bootstrap: pb.BootstrapData | None = None) -> None:
         request = pb.LifecycleRequest(node=self._ref(), action=action)

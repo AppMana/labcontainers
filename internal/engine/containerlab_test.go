@@ -10,12 +10,24 @@ import (
 )
 
 type fakeRunner struct {
-	result Result
-	argv   [][]string
+	result    Result
+	argv      [][]string
+	remaining string
 }
 
 func (f *fakeRunner) Run(_ context.Context, _ io.Reader, argv ...string) (Result, error) {
 	f.argv = append(f.argv, append([]string(nil), argv...))
+	if strings.HasPrefix(strings.Join(argv, " "), "docker ps -aq --filter label=clab-topo-file=") {
+		if strings.HasPrefix(argv[len(argv)-1], "label=clab-node-name=") {
+			return Result{Stdout: []byte(f.remaining)}, nil
+		}
+	}
+	if strings.HasPrefix(strings.Join(argv, " "), "docker ps --no-trunc --filter label=containerlab=") {
+		if argv[len(argv)-1] == "{{.Names}}" {
+			return Result{Stdout: []byte("custom-prefix-node\n")}, nil
+		}
+		return Result{Stdout: []byte("native-container-id\n")}, nil
+	}
 	return f.result, nil
 }
 
@@ -34,27 +46,66 @@ func TestDoctorRequiresPinnedVersion(t *testing.T) {
 	}
 }
 
-func TestReplaceUsesFilteredDestroyThenConvergence(t *testing.T) {
+func TestExplicitContainerlabBinaryDoesNotChangeHostDefault(t *testing.T) {
+	t.Setenv("LABCONTAINERS_CONTAINERLAB", "/isolated/containerlab")
+	if got := NewContainerlab().Binary; got != "/isolated/containerlab" {
+		t.Fatalf("explicit native binary = %q", got)
+	}
+	t.Setenv("LABCONTAINERS_CONTAINERLAB", "")
+	if got := NewContainerlab().Binary; got != "containerlab" {
+		t.Fatalf("host default = %q", got)
+	}
+}
+
+func TestRemovalUsesOnlyFilteredDestroyWithoutConvergence(t *testing.T) {
 	f := &fakeRunner{}
 	c := &Containerlab{Runner: f, Binary: "clab"}
-	if err := c.Replace(context.Background(), "lab.clab.yml", "n1"); err != nil {
+	if err := c.RemoveNode(context.Background(), "lab.clab.yml", "n1"); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"clab", "destroy", "--topo", "lab.clab.yml", "--node-filter", "n1"}, {"clab", "deploy", "--topo", "lab.clab.yml", "--format", "json"}}
+	want := [][]string{
+		{"docker", "ps", "--no-trunc", "--filter", "label=clab-topo-file=lab.clab.yml", "--filter", "label=clab-node-kind=linux", "--format", "{{.ID}}\t{{.Label \"clab-node-name\"}}"},
+		{"clab", "destroy", "--topo", "lab.clab.yml", "--node-filter", "n1"},
+		{"docker", "ps", "-aq", "--filter", "label=clab-topo-file=lab.clab.yml", "--filter", "label=clab-node-name=n1"},
+	}
 	if !reflect.DeepEqual(f.argv, want) {
 		t.Fatalf("commands = %#v, want %#v", f.argv, want)
 	}
 }
 
-func TestStartConvergesAfterGenericVMWasAutoRemoved(t *testing.T) {
+func TestRemovalRejectsContainerSurvivingNativeDestroy(t *testing.T) {
+	f := &fakeRunner{remaining: "still-present\n"}
+	c := &Containerlab{Runner: f, Binary: "clab"}
+	if err := c.RemoveNode(context.Background(), "lab.clab.yml", "n1"); err == nil || !strings.Contains(err.Error(), "must not be reset") {
+		t.Fatalf("ignored surviving runtime: %v", err)
+	}
+	for _, args := range f.argv {
+		if args[0] == "clab" && args[1] == "deploy" {
+			t.Fatal("removal deployed the lab")
+		}
+	}
+}
+
+func TestStartDoesNotSilentlyReconcileOtherNodes(t *testing.T) {
 	f := &fakeRunner{}
 	c := &Containerlab{Runner: f, Binary: "clab"}
 	if err := c.Lifecycle(context.Background(), "lab.clab.yml", "n1", "start"); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"clab", "start", "--topo", "lab.clab.yml", "--node", "n1"}, {"clab", "deploy", "--topo", "lab.clab.yml", "--format", "json"}}
+	want := [][]string{{"clab", "start", "--topo", "lab.clab.yml", "--node", "n1"}}
 	if !reflect.DeepEqual(f.argv, want) {
 		t.Fatalf("commands = %#v, want %#v", f.argv, want)
+	}
+}
+
+func TestNativeStartFailureIsNotHiddenByDeployment(t *testing.T) {
+	f := &fakeRunner{result: Result{ExitCode: 1, Stderr: []byte("native start failed")}}
+	c := &Containerlab{Runner: f, Binary: "clab"}
+	if err := c.Lifecycle(context.Background(), "lab.clab.yml", "n1", "start"); err == nil {
+		t.Fatal("native start failure hidden")
+	}
+	if len(f.argv) != 1 || f.argv[0][1] != "start" {
+		t.Fatalf("unexpected fallback: %v", f.argv)
 	}
 }
 
@@ -92,7 +143,7 @@ func TestQGAExecUsesStandaloneGuestBinary(t *testing.T) {
 	if _, err := c.Exec(context.Background(), "lab", "n1", "qga", time.Second, nil, []string{"true"}); err != nil {
 		t.Fatal(err)
 	}
-	got := strings.Join(f.argv[0], " ")
+	got := strings.Join(f.argv[1], " ")
 	if !strings.Contains(got, "/labcontainers-guest exec 1s 0 true") {
 		t.Fatalf("command = %q", got)
 	}
@@ -104,7 +155,7 @@ func TestPutPreservesPathsWithSpaces(t *testing.T) {
 	if err := c.Put(context.Background(), "lab", "n1", "container", "/var/lib/lab data/file", 0o600, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	got := strings.Join(f.argv[0], " ")
+	got := strings.Join(f.argv[1], " ")
 	if !strings.Contains(got, `mkdir -p -- "$(dirname -- '/var/lib/lab data/file')"`) {
 		t.Fatalf("put command = %q", got)
 	}
@@ -116,8 +167,8 @@ func TestQGAPutUsesGuestHelper(t *testing.T) {
 	if err := c.Put(context.Background(), "lab", "win", "qga", `C:\Lab Data\file.txt`, 0o600, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"docker", "exec", "-i", "clab-lab-win", "/labcontainers-guest", "put", "10m", "600", `C:\Lab Data\file.txt`}
-	if !reflect.DeepEqual(f.argv[0], want) {
-		t.Fatalf("command = %#v, want %#v", f.argv[0], want)
+	want := []string{"docker", "exec", "-i", "native-container-id", "/labcontainers-guest", "put", "10m", "600", `C:\Lab Data\file.txt`}
+	if !reflect.DeepEqual(f.argv[1], want) {
+		t.Fatalf("command = %#v, want %#v", f.argv[1], want)
 	}
 }

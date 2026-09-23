@@ -11,12 +11,14 @@ import time
 from pathlib import Path
 
 import vrnetlab
+from interfaces import declared_nics, isolate_control_listeners, wait_for_interfaces
 
 
 class WindowsVM(vrnetlab.VM):
     def __init__(self, nics: int, connection_mode: str):
         image = next('/' + name for name in os.listdir('/') if re.search(r'\.qcow2$', name))
         super().__init__('Administrator', '', disk_image=image, ram=8192, smp='4')
+        isolate_control_listeners(self)
         self.num_nics = nics
         self.conn_mode = connection_mode
         self.nic_type = 'virtio-net-pci'
@@ -36,13 +38,10 @@ class WindowsVM(vrnetlab.VM):
     def gen_mgmt(self):
         # Management remains out-of-band over QGA; every NIC visible to
         # Windows belongs to the declared test topology.
-        return []
+        return ['-nic', 'none']
 
     def nic_provision_delay(self):
-        while not Path('/sys/class/net/eth1').exists():
-            time.sleep(1)
-        self.num_provisioned_nics = self.num_nics
-        self.highest_provisioned_nic_num = self.num_nics
+        wait_for_interfaces(self)
 
     def bootstrap_spin(self):
         try:
@@ -73,7 +72,7 @@ class Windows(vrnetlab.VR):
 if __name__ == '__main__':
     os.environ.setdefault('VR_MGMT_IS_A_LINK', 'true')
     parser = argparse.ArgumentParser()
-    parser.add_argument('--nics', type=int, default=1)
+    parser.add_argument('--nics', type=int, default=None)
     parser.add_argument('--hostname', default='windows')
     # Containerlab's generic_vm kind supplies the common vrnetlab flags even
     # though QGA, rather than in-band SSH, controls this image.
@@ -82,6 +81,7 @@ if __name__ == '__main__':
     parser.add_argument('--connection-mode', default='tc')
     parser.add_argument('--trace', action='store_true')
     args = parser.parse_args()
+    nics = declared_nics(args.nics)
     logging.basicConfig(level=logging.DEBUG if args.trace else logging.INFO)
     subprocess.Popen(['/labcontainers-guest', 'serve'])
     reset = Path('/labcontainers-reset-instance')
@@ -89,4 +89,4 @@ if __name__ == '__main__':
         for disk in Path('/').glob('*-overlay.qcow2'):
             disk.unlink()
         reset.unlink()
-    Windows(args.nics, args.connection_mode).start()
+    Windows(nics, args.connection_mode).start()

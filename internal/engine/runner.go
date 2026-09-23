@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"time"
 )
 
 type Result struct {
@@ -25,6 +26,9 @@ func (ExecRunner) Run(ctx context.Context, stdin io.Reader, argv ...string) (Res
 		return Result{}, fmt.Errorf("empty command")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	// A killed CLI can leave descendants holding its stdout/stderr pipes.
+	// Do not let pipe draining defeat the caller's cancellation deadline.
+	cmd.WaitDelay = time.Second
 	cmd.Stdin = stdin
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -34,6 +38,9 @@ func (ExecRunner) Run(ctx context.Context, stdin io.Reader, argv ...string) (Res
 		r.ExitCode = cmd.ProcessState.ExitCode()
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return r, ctx.Err()
+		}
 		if _, ok := err.(*exec.ExitError); ok {
 			return r, nil
 		}

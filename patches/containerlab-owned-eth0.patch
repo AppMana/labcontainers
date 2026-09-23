@@ -1,0 +1,117 @@
+diff --git a/links/ownership.go b/links/ownership.go
+index b901d014..b0a78ad5 100644
+--- a/links/ownership.go
++++ b/links/ownership.go
+@@ -52,15 +52,7 @@ func DiscoverOwnedInterfacesFor(
+ 
+ 		for _, link := range links {
+ 			name := link.Attrs().Name
+-			if name == "lo" || name == "eth0" {
+-				continue
+-			}
+-			if knownIfaceNames != nil {
+-				if _, known := knownIfaceNames[name]; !known {
+-					continue
+-				}
+-			}
+-			if !HasOwnershipAltNameFor(link, ownerName, name) {
++			if !isOwnedInterfaceFor(link, ownerName, knownIfaceNames) {
+ 				continue
+ 			}
+ 
+@@ -109,6 +101,21 @@ func DiscoverOwnedInterfacesFor(
+ 	return interfaces, nil
+ }
+ 
++// A data endpoint can be named eth0 when runtime management networking is
++// disabled. Use endpoint ownership, not the conventional management name.
++func isOwnedInterfaceFor(link netlink.Link, ownerName string, knownIfaceNames map[string]struct{}) bool {
++	name := link.Attrs().Name
++	if name == "lo" {
++		return false
++	}
++	if knownIfaceNames != nil {
++		if _, known := knownIfaceNames[name]; !known {
++			return false
++		}
++	}
++	return HasOwnershipAltNameFor(link, ownerName, name)
++}
++
+ func DiscoverOwnedInterfaceNames(
+ 	ctx context.Context,
+ 	node Node,
+diff --git a/links/ownership_test.go b/links/ownership_test.go
+new file mode 100644
+index 00000000..7b85b2fb
+--- /dev/null
++++ b/links/ownership_test.go
+@@ -0,0 +1,49 @@
++package links
++
++import (
++	"testing"
++
++	"github.com/vishvananda/netlink"
++)
++
++func TestEth0DiscoveryUsesOwnershipNotManagementName(t *testing.T) {
++	t.Parallel()
++	for _, tc := range []struct {
++		name, iface, owner string
++		want               bool
++	}{
++		{"owned data eth0", "eth0", "node", true},
++		{"unowned management eth0", "eth0", "", false},
++		{"foreign eth0", "eth0", "other", false},
++		{"owned ordinary data", "eth1", "node", true},
++		{"loopback remains excluded", "lo", "node", false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: tc.iface}}
++			if tc.owner != "" {
++				link.Attrs().AltNames = []string{ownershipAltNameFor(tc.owner, tc.iface)}
++			}
++			for _, known := range []map[string]struct{}{nil, {tc.iface: {}}} {
++				if got := isOwnedInterfaceFor(link, "node", known); got != tc.want {
++					t.Fatalf("discovered=%v want=%v", got, tc.want)
++				}
++			}
++			if isOwnedInterfaceFor(link, "node", map[string]struct{}{}) {
++				t.Fatal("ignored known-interface filter")
++			}
++		})
++	}
++}
++
++func TestParkingRetainsOwnedDataEth0(t *testing.T) {
++	t.Parallel()
++	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth0"}}
++	known := map[string]struct{}{"eth0": {}}
++	if isOwnedInterface(link, known) {
++		t.Fatal("unmarked management eth0 must not be parked")
++	}
++	link.Attrs().AltNames = []string{ownershipAltNameFor("node", "eth0")}
++	if !isOwnedInterface(link, known) {
++		t.Fatal("owned data eth0 must be parked")
++	}
++}
+diff --git a/links/parking_node.go b/links/parking_node.go
+index bc337e6e..a7d140ca 100644
+--- a/links/parking_node.go
++++ b/links/parking_node.go
+@@ -242,8 +242,12 @@ func listOwnedInterfaceNames(
+ func isOwnedInterface(link netlink.Link, knownIfaceNames map[string]struct{}) bool {
+ 	name := link.Attrs().Name
+ 	switch name {
+-	case "lo", "eth0":
++	case "lo":
+ 		return false
++	case "eth0":
++		// Docker's management eth0 is unmarked; a declared data eth0 has
++		// Containerlab ownership and must survive namespace parking.
++		return hasOwnershipAltName(link)
+ 	}
+ 
+ 	if _, known := knownIfaceNames[name]; !known && !hasOwnershipAltName(link) {
+

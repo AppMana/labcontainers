@@ -1,12 +1,83 @@
 # Labcontainers
 
-Labcontainers is a Testcontainers-style API for isolated container and virtual
-machine test networks. It keeps Containerlab as the topology and dataplane
-engine, and adds test-session ownership, VM control without a management NIC,
-fault scheduling, cleanup, artifacts, and language-neutral APIs.
+Labcontainers couples Containerlab networks, container/VM execution, and test
+sessions. Tests construct native Go topology objects or Python objects generated
+from Containerlab's JSON Schema; serialization is an internal boundary, not YAML
+that test authors must write.
 
-It is not a Containerlab fork. Labcontainers currently pins the stock
-Containerlab `v0.79.0` CLI and accepts unmodified `.clab.yml` topology files.
+The base SDK works without Kubernetes. Ad hoc VMs, containers, switches, and
+links use the underlying component types. Kubernetes helpers are an optional
+specialization for preparing and exercising clusters on that same topology.
+They are not a second topology or VM API.
+
+The network contract is deliberately minimal: no implicit management NIC or
+network, WAN, egress, or published ports. External connectivity must be declared
+explicitly. VM control uses a serial QEMU Guest Agent channel, not an alternate
+network path. Tests should prove that cutting the declared data path breaks
+reachability, not infer isolation from a successful boot or a ready node.
+
+Labcontainers is not a replacement Containerlab implementation. It pins
+Containerlab `v0.79.0`, with narrow dependency patches required for the
+reconciliation tests described below. Upstream types and raw transport requests
+remain accessible; the SDK adds ownership, cleanup, fault recovery, and evidence.
+
+Start with the [Go](#go) or [Python](#python) code-first APIs. The optional
+[Kubernetes helpers](#kubernetes-helpers) consume native Kubernetes objects.
+
+## Lifecycle and runtime qualification
+
+Crash tests use `Node.Crash()` (Python/JavaScript `node.crash()`) or the `CRASH`
+lifecycle action. It resolves one running container using topology and node
+labels and sends SIGKILL, killing its QEMU process without guest shutdown.
+Attached disks persist. `PowerOff()` retains Containerlab stop semantics.
+
+`Start`/`Restart` invoke the requested native operation without falling back to
+whole-lab deployment. Native errors are preserved, and success requires a
+unique running container plus the target's isolation check. If a VM was
+auto-removed, or links need reconstruction, explicitly inspect `lab.Plan(ctx,
+nil)` and recover with `lab.Apply(ctx, nil, approvedPlan, nil)` (Python:
+`lab.plan()` / `lab.apply(None, approved_plan)`). Assert the permitted node
+impact before approving it. A plan may recreate a VM and its root disk; only
+explicitly attached persistent disks are covered by the persistence guarantee.
+
+VM teardown can recreate Containerlab veth links. Labcontainers journals Linux
+peer-container bridge memberships before crash/stop/restart/replacement and
+restores them after successful native start or approved topology application,
+so a caller does not need to reconnect
+the switch port. Recovery is restricted to the same running, session-owned
+peer container IDs; missing peers or failed reattachment fail the operation
+and retain its retry journal. This preserves bridge membership, not arbitrary
+port configuration such as VLAN filters, qdiscs, or routes, nor configuration
+inside a replaced switch. Host bridges are not modified by this recovery.
+The current journal includes all bridge members on surviving Linux peers:
+overlapping multi-node outages may require recovering both nodes and retrying
+once both cables exist. A peer replacement can also
+block an outstanding journal. These cases fail closed; simultaneous recovery
+without retries is not yet qualified.
+
+Timelines accept `wait_exec`: a bounded guest predicate with an expected exit
+code and optional stdout/stderr substring matches. A match permits the next
+action; timeout aborts the timeline. Ordinary timeline `exec` now aborts on
+nonzero exit status. Observation and crash are separate operations: polling
+cannot guarantee a transient state remains active at the instant of kill.
+Exact application boundaries require an explicit barrier. Events record guest
+command exits and lifecycle completion.
+
+The manual `VM runtime qualification` workflow runs the Windows QGA/NTFS/crash
+test on a dedicated runner labelled `self-hosted`, `linux`, `x64`, `kvm`, and
+`seaweedfs-lab`. Set Actions variable `LABCONTAINERS_WINDOWS_IMAGE` to a preloaded
+image's `repository@sha256:...` reference. For local reproduction run `make build`
+and `LABCONTAINERS_WINDOWS_LIVE=1 go test ./pkg/client -run '^TestLiveWindows$' -v -count=1 -timeout=18m`.
+The ordinary unit suite skips this privileged runtime test.
+VM recovery qualification uses the corrected native CLI described below; build
+it and set `LABCONTAINERS_CONTAINERLAB` before running these commands. The manual
+workflow does this automatically without replacing the host installation.
+
+The same workflow runs the Linux VM bridge-restart regression with a preloaded
+`LABCONTAINERS_VM_IMAGE` Actions variable (`repository@sha256:...`). Locally:
+`make build` then `LABCONTAINERS_VM_LIVE=1 go test ./pkg/client -run '^TestLiveVMCrashRestoresRuntimeBridgeMembership$' -v -count=1 -timeout=12m`.
+`LABCONTAINERS_VM_IMAGE` can override the local Ubuntu image and
+`LABCONTAINERS_LABD` can select a previously built daemon for RED/GREEN testing.
 
 ## Status
 
@@ -33,18 +104,26 @@ that backend lands; no best-effort partition is reported as successful.
 - Linux x86-64
 - Docker and KVM/QEMU for VM nodes
 - Containerlab exactly `v0.79.0`
+- Go 1.26.3 or newer for the native Go APIs (required by the pinned k0s types)
 - non-interactive scoped `sudo` access for Containerlab network operations
 
 Run `labctl doctor` before a suite. Labcontainers never creates Containerlab's
-implicit management network under its default policy: every non-bridge node
-must resolve to `network-mode: none`, published ports and external link types
-are rejected, and `mgmt.skip-when-unused` is added to the private topology.
+implicit management network under its default policy: omitted node network mode
+becomes `none`; explicit non-isolated modes, published ports, and external links
+(including short-form host/management links and borrowed host bridges) require opt-in. There is no default
+WAN or egress connection. `mgmt.skip-when-unused` is set on the private topology.
+An external-access opt-in permits explicitly declared connections; it does not
+enable implicit networks or disable runtime checks on the other isolated nodes.
+Runtime Docker checks alone do not certify guest NICs or application reachability;
+network-sensitive tests must also cut their declared paths and probe from guests.
 
-Install the daemon and diagnostic CLI once for all language SDKs:
+Install the daemon and diagnostic CLI once for all language SDKs. The examples
+below pin the daemon and clients to the same tested revision; do not mix these
+clients with the older `v0.2.0-alpha.2` daemon.
 
 ```sh
-go install github.com/appmana/labcontainers/cmd/labd@v0.2.0-alpha.2
-go install github.com/appmana/labcontainers/cmd/labctl@v0.2.0-alpha.2
+go install github.com/appmana/labcontainers/cmd/labd@3d724ee9d030731e30c11aef5b6d188ca2f40849
+go install github.com/appmana/labcontainers/cmd/labctl@3d724ee9d030731e30c11aef5b6d188ca2f40849
 ```
 
 `labd` must be on `PATH`, or its path can be passed as Go's `LabdPath`,
@@ -53,40 +132,322 @@ Python's `labd=`, or Node.js's `{labd: ...}` launch option.
 ## Go
 
 ```go
+// Native imports, not a second Labcontainers topology model:
+// clab "github.com/appmana/labcontainers/pkg/containerlab"
+// "github.com/srl-labs/containerlab/core"
+// "github.com/srl-labs/containerlab/types"
+// "github.com/srl-labs/containerlab/links"
+
 ctx := context.Background()
 c, err := client.Launch(ctx, client.Options{})
 if err != nil { log.Fatal(err) }
 defer c.Close()
 
-lab, err := c.Start(ctx, &labcontainersv1.LabSpec{
-    Topology: &labcontainersv1.TopologySource{
-        Source: &labcontainersv1.TopologySource_Path{Path: "basic.clab.yml"},
+topology, err := clab.Source(&core.Config{
+    Name: "basic",
+    Topology: &types.Topology{
+        Defaults: &types.NodeDefinition{Kind: "linux", Image: "alpine:3.20"},
+        Nodes: map[string]*types.NodeDefinition{
+            "client": {Exec: []string{"ip addr add 192.0.2.1/24 dev eth0"}},
+            "server": {Exec: []string{"ip addr add 192.0.2.2/24 dev eth0"}},
+        },
+        Links: []*links.LinkDefinition{{
+            Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth0", "server:eth0"}},
+        }},
     },
-}, 30*time.Minute)
+})
+if err != nil { log.Fatal(err) }
+lab, err := c.Start(ctx, &labcontainersv1.LabSpec{Topology: topology}, 30*time.Minute)
 if err != nil { log.Fatal(err) }
 
 result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 ```
 
+For fields not exposed by convenience methods, use the generated transport
+directly: `c.RPC().Exec(ctx, &labcontainersv1.ExecRequest{Node: node.Ref(),
+Argv: argv, Stdin: input, TimeoutMillis: 900000})`. Python exposes the same
+surface as `client.rpc` and `node.ref`. These preserve the transport's request
+types, responses, errors, and call options; no parallel options model is needed.
+If an in-memory topology contains relative host bind paths, set
+`topology.BaseDirectory` (Python `topology.base_directory`) to their absolute
+base directory. This preserves their meaning when the daemon writes its private
+Containerlab file; no caller-authored topology file is necessary.
+
+`lab.Plan(ctx, proposedSource)` previews a full proposed topology through native
+Containerlab dry-run and returns `*core.ApplyResult`, including
+`RecreatedNodes`, `RestartedNodes`, and `NodeChangeReasons`. Pass `nil` to inspect
+drift against the current topology. Python's `lab.plan(source(config))` returns
+the same native JSON keys as a dictionary; `lab.plan()` inspects current drift.
+The raw transport retains the unmodified native JSON, including new upstream
+fields. Plans do not apply changes, reserve runtime state, or authorize a later
+restart automatically. Drafts retain the session's isolation policy and existing
+SDK-managed disk/bootstrap binds.
+
+After inspecting/asserting the permitted impact, apply that exact native plan:
+`lab.Apply(ctx, proposedSource, approvedPlan, nodeExtensions)` in Go or
+`lab.apply(source(config), approved_plan, nodes=extensions)` in Python. The
+server replans before deployment and rejects changed impact. The optional
+extensions select serial `qga` control for newly added VMs; native Containerlab
+objects still define their images, links, binds, environment, and lifecycle
+behavior. Existing SDK-managed disk/bootstrap attachments are preserved, but
+dynamic changes to those extensions are explicitly unsupported so far.
+
+Topology application refuses foreign session containers and active faults,
+checks isolation after convergence, and retains before/desired topologies and
+the approved native plan as evidence. Native apply is not transactional: a
+failure can leave partial changes. The session then reports `reconcile-failed`
+and remains inspectable, retryable with a freshly reviewed plan, or destroyable.
+These checks serialize operations within this daemon; they cannot reserve the
+runtime against independent Docker/Containerlab changes by other processes.
+
+Known native v0.79 limitation: interface ownership discovery excludes `eth0`
+unconditionally, even if it is a declared data link on a node with no management
+network. Native plans can therefore list an already-working `eth0` link in
+`AddedLinks`. The SDK preserves that result; it does not claim it is a no-op or
+automatically apply it. This upstream management-interface assumption still
+needs correction before general live reconciliation can be qualified.
+
+An isolated correction is included in `patches/containerlab-owned-eth0.patch`.
+It uses native endpoint ownership to distinguish data `eth0` from an unmarked
+management interface, in both discovery and namespace parking. A second patch,
+`containerlab-stopped-endpoints.patch`, avoids inspecting a nonexistent stopped
+container namespace while still checking ownership in preserved namespaces.
+Build the corrected CLI without
+altering the host installation or module cache:
+
+```sh
+bash scripts/build-containerlab.sh /absolute/path/containerlab-owned-eth0
+make build
+LABCONTAINERS_CONTAINERLAB=/absolute/path/containerlab-owned-eth0 \
+  LABCONTAINERS_LIVE=1 LABCONTAINERS_RECONCILE_LIVE=1 \
+  go test ./pkg/client -run '^TestLive$' -count=1 -v
+```
+
+The builder verifies the pinned version, runs native link/core tests, and embeds
+the combined patch digest in the CLI's commit metadata. `LABCONTAINERS_CONTAINERLAB`
+selects an explicit CLI for the child daemon; ordinary launches still use the
+host `containerlab`. The strict live no-op check fails on stock v0.79.0 and passes
+with the correction. No management NIC is added, and no interface is renamed.
+This is a narrow patched dependency, not a replacement topology or VM API;
+upstreaming it remains outstanding. Go/Python live application tests qualify
+container addition/removal; Go additionally verifies a new data link carries
+traffic and unrelated containers retain both identity and start time. General
+VM topology-change and storage-fixture qualification remain outstanding.
+
+### Explicit fresh replacement
+
+`node.PrepareReplacement(ctx, bootstrap)` (Python `node.prepare_replacement()`)
+removes only that runtime node, then resets its disposable attached disks and
+optionally installs new bootstrap data. It leaves the node
+`replacement-pending`; it does **not** deploy the lab. If removal fails, disks
+and bootstrap are left untouched. Revert active faults first.
+
+Review `lab.Plan(ctx, nil)` and call `lab.Apply(ctx, nil, approvedPlan, nil)` to
+recreate it. Python uses `plan = lab.plan(); lab.apply(None, plan)` after the
+test checks the plan's permitted impact. Native filtered destruction removes
+both ends of veth links: the plan reports the new link, but a surviving peer's
+interface configuration is not automatically replayed. The scenario must
+explicitly configure the recreated peer endpoint as necessary. No hidden
+whole-lab deployment or peer restart is performed.
+
+Compatibility change: legacy `Replace`/`ReplaceWithBootstrap` and Python
+`replace` are deprecated aliases for this preparation phase, no longer a
+one-call remove-and-deploy operation. The raw `REPLACE` lifecycle action has
+the same preparation-only behavior. Callers must add explicit Plan/Apply.
+
+## Guest network bootstrap
+
+Guest network bootstrap is also code-first, independently of Kubernetes:
+`pkg/cloudinit/networkconfig` contains Go types generated from cloud-init's
+network-v2 schema. Construct `NetworkConfigVersion2` and call `WriteFile` at
+the launcher's native bind-file boundary. Python exposes the same schema as
+`labcontainers.cloudinit.models` with `write_network_config(path, config)`.
+Neither writer inserts network defaults. Generation and the small open-field
+codec correction are documented in `schemas/cloud-init/README.md`.
+
+Link-state fault rollback restores the endpoint's observed administrative UP
+state, not the opposite of the requested fault. Observation reads the Linux
+wrapper's native sysfs flags, including for Windows guests; no guest management
+NIC is needed. A second active link-state fault on the same endpoint is rejected
+until the first is reverted. This prevents ambiguous restoration order. Existing
+netem configuration snapshot/restore remains a separate limitation.
+
+Fault rollback records are saved before network mutation. If application fails
+after that point, the record remains active because backend failure does not
+prove that nothing changed. The gRPC error includes native `google.rpc.ErrorInfo`
+with reason `FAULT_APPLY_FAILED` and `session_id`/`fault_id` metadata. Use those
+identifiers with the generated `RevertFault` RPC; no state-file editing is
+needed. `fault.prepared` and `fault.apply_failed` events distinguish this case
+from a successfully applied fault. Reconciliation remains blocked until active
+faults have been reverted.
+
+After reconnecting, use generated `GetSession(SessionRef{id: ...})` to discover
+the session's `faults` records. Each includes its ID, kind, node, interface,
+active status, and optional `restore_up` for link-state faults. Explicit false
+means the endpoint was down; an absent value means the field does not apply.
+Active includes an uncertain or interrupted application, so it is a recovery
+obligation rather than proof of current packet behavior. Reverted records remain
+visible with `active=false`. This inspection works from persisted session state
+after a daemon restart, without asking tests to read internal files.
+
+## Kubernetes helpers
+
+The optional `pkg/kubernetes/kube` package contains the shared bastion-side
+Kubernetes client extracted from cloud-provisioning. It does not open a host
+route or install a management network. Call `ApplyObjects(ctx, objects...)`
+with upstream Kubernetes `runtime.Object` values (for example generated
+`corev1.Pod` and `corev1.Service` types), supplying their native `TypeMeta`.
+The SDK sends a native Kubernetes List over stdin to kubectl on the explicitly
+selected bastion. No caller-authored YAML or manifest file is needed.
+Unstructured CRDs retain their fields. CAPI association assertions stay in the
+product, and extraction of the six distribution builders is still pending.
+
+`pkg/kubernetes/k0s` is a thin, optional k0s coupling layer. Pass an upstream
+`github.com/k0sproject/k0s/pkg/apis/k0s/v1beta1.ClusterConfig` to
+`k0s.WriteConfig(ctx, node, "/etc/k0s/k0s.yaml", config)`. It serializes exactly
+that native object; it does not call default constructors or choose a CNI,
+address, load balancer, or image. `k0s.Install(ctx, node, "controller",
+"--config=/etc/k0s/k0s.yaml")` passes native arguments unchanged, without a
+shell. The caller stages the intended binary, explicitly starts it with
+`node.Exec(ctx, "k0s", "start")`, and owns orchestration and retry policy.
+`k0s.Ready(ctx, node)` is one supervisor/API/kubeconfig probe, not a pod-network
+qualification. These helpers need only the existing rig contract's command/file
+subset, `rig.Commands`; they do not require lifecycle or network-fault methods.
+Use `session.Node("controller").Commands()` with a normal Go session, or pass
+an existing product `rig.Node` directly. The adapter uses the same RPC and
+control channel, returns `rig.ExitError` for nonzero command exits, and buffers
+stdin/file readers for the byte-based transport. The original `node.Exec`,
+`node.Put`, `node.Ref`, and `client.RPC()` remain available unchanged for native
+request/result fields and call options. No VM, network, or management path is
+created by the adapter.
+
+The current buffered transport accepts files up to 256 MiB and QGA command
+stdin up to 64 MiB. Oversized payloads fail explicitly, rather than silently
+truncating. An unknown-length HTTP upload can leave a partial destination file
+on failure; uploads are not atomic. These limits do not provide a large-image
+archive transport. Rebuild the VM wrapper's guest-control binary to apply the
+HTTP boundary checks to existing images.
+
+For larger offline artifacts, use the existing Containerlab bind and vrnetlab
+QEMU passthrough fields. For example, a native `types.NodeDefinition` can attach
+a caller-prepared ISO as a read-only virtio disk:
+
+```go
+vm := &types.NodeDefinition{
+    Kind: "generic_vm", Image: preparedImage, ImagePullPolicy: "Never",
+    NetworkMode: "none",
+    Binds: []string{absoluteISOPath + ":/artifacts.iso:ro"},
+    Env: map[string]string{
+        "QEMU_ADDITIONAL_ARGS": "-drive file=/artifacts.iso,format=raw,if=none,id=artifacts,readonly=on -device virtio-blk-pci,drive=artifacts,serial=lc-artifacts",
+    },
+}
+```
+
+The caller prepares and verifies the media, mounts it inside the guest, and
+copies its contents to the destination expected by the software under test
+(for k0s Linux workers, the explicit data directory's `images` subdirectory).
+No network, download, or automatic import is added by Labcontainers. vrnetlab
+splits `QEMU_ADDITIONAL_ARGS` on whitespace, so the container-side path in that
+argument must not contain spaces. This passthrough is not a sandbox for arbitrary
+QEMU arguments; callers must not add undeclared networking through it.
+`TestLiveReadOnlyArtifactDisk` checks the Linux path with a 257 MiB artifact,
+guest-local copy verification, read-only media, and zero guest NICs. Run it with
+`LABCONTAINERS_ARTIFACT_DISK_IMAGE` set to a prepared Linux QGA wrapper image;
+the host also needs `xorriso`. Windows artifact-media mounting is not covered by
+that test.
+
+`TestLiveK0sAirgapImport` exercises k0s's own bundle watcher, rather than calling
+`ctr images import` from the test. Supply `LABCONTAINERS_K0S_AIRGAP_VM_IMAGE`,
+`K0S_AIRGAP_BINARY`, `K0S_AIRGAP_BINARY_SHA256`, `K0S_AIRGAP_BUNDLE`,
+`K0S_AIRGAP_BUNDLE_SHA256`, and `K0S_AIRGAP_EXPECTED_IMAGE` (the fully qualified
+image reference expected in containerd). It attaches verified artifacts as
+read-only media, copies the bundle into `/var/lib/k0s/images` before startup,
+and uses native k0s configuration objects. The Linux wrapper must have no prior
+`/var/lib/k0s`; the host needs `xorriso` and a preloaded `alpine:3.20` peer image.
+The VM has one declared data link and no default route. This test deliberately
+disables CNI and kube-proxy: import success is not pod or service qualification,
+and does not verify the provenance or compatibility of a full runtime bundle.
+
+For static pods and native multi-document configuration such as kubeadm, call
+`kube.WriteObjects(ctx, node.Commands(), "/explicit/path", 0o600, objects...)`.
+The caller supplies the native objects, GVKs, destination and permissions;
+serialization is internal. This does not apply the objects to an API or create
+directories.
+
+The configuration types are pinned to k0s release `v1.36.2+k0s.0`, commit
+`bdf1c22c23a5` (Go resolves that tag to pseudo-version
+`v1.36.3-0.20260626104849-bdf1c22c23a5`). This is a configuration dependency,
+not a default runtime binary. Kubernetes staging module versions are explicitly
+pinned because dependency-module `replace` directives are not inherited.
+
 ## Python
 
+Kubernetes is optional: install `labcontainers[kubernetes]` to use the official
+[Kubernetes Python client's generated models](https://github.com/kubernetes-client/python).
+Import models from that client directly, without Labcontainers replacements:
+
 ```python
-from labcontainers import Client, api
+from kubernetes.client import V1ConfigMap, V1ObjectMeta
+from labcontainers.kubernetes import apply_objects, write_objects
+
+config = V1ConfigMap(
+    api_version="v1", kind="ConfigMap",
+    metadata=V1ObjectMeta(name="scenario"), data={"mode": "isolated"},
+)
+apply_objects(
+    lab.node("bastion"), config,
+    kubectl_argv=("kubectl", "--kubeconfig", "/etc/admin.conf"),
+)
+# When a component consumes a guest file rather than the Kubernetes API:
+write_objects(lab.node("guest"), "/tmp/config.json", config)
+```
+
+The optional helpers use the upstream serializer, require explicit native
+`api_version`/`kind`, and preserve dictionary-based custom resources. They do
+not load host kubeconfig, connect the host to the API, select an endpoint,
+install kubectl, or retry. `apply_objects` returns the native CompletedProcess
+and raises CalledProcessError with diagnostics on nonzero exit. These are
+object-transport helpers, not a fully extracted distribution fixture.
+
+```python
+from labcontainers import Client, api, containerlab as clab, source
+
+topology = clab.Config(
+    name="basic",
+    topology=clab.Topology(
+        defaults=clab.NodeConfig(kind="linux", image="alpine:3.20"),
+        nodes={
+            "client": clab.NodeConfig(exec=["ip addr add 192.0.2.1/24 dev eth0"]),
+            "server": clab.NodeConfig(exec=["ip addr add 192.0.2.2/24 dev eth0"]),
+        },
+        links=[clab.LinkConfigShort(endpoints=["client:eth0", "server:eth0"])],
+    ),
+)
 
 with Client() as client:
-    lab = client.start(api.LabSpec(
-        topology=api.TopologySource(path="basic.clab.yml")))
+    lab = client.start(api.LabSpec(topology=source(topology)))
     result = lab.node("client").exec("ping", "-c", "1", "192.0.2.2")
     result.check_returncode()
 ```
 
-Python can be installed directly from a Git checkout:
+Python bindings are generated from the exact schema version pinned in `go.mod`;
+`make generate-containerlab` regenerates them reproducibly. Aliases such as
+`network_mode` serialize to native `network-mode`. Unset schema defaults are not
+sent. Arbitrary fields are retained where the upstream schema permits them, and
+closed schema objects reject unknown fields.
+Generated models are not a replacement for Containerlab's own validation;
+kind-specific conditional constraints are still validated during deployment.
+
+Python can be installed directly from Git at the same revision as the daemon:
 
 ```sh
-python -m pip install 'git+https://github.com/AppMana/labcontainers.git@v0.2.0-alpha.2'
+python -m pip install 'git+https://github.com/AppMana/labcontainers.git@3d724ee9d030731e30c11aef5b6d188ca2f40849'
 ```
 
 ## Node.js
+
+The npm transport remains supported; schema-generated topology objects in this
+change are provided for Go and Python.
 
 ```js
 const {Client} = require('@appmana/labcontainers');
@@ -107,12 +468,49 @@ try {
 The npm package is also Git-installable without a publish step:
 
 ```sh
-npm install 'git+https://github.com/AppMana/labcontainers.git#v0.2.0-alpha.2'
+npm install 'git+https://github.com/AppMana/labcontainers.git#3d724ee9d030731e30c11aef5b6d188ca2f40849'
 ```
 
 Use `session.keep()` only for debugging. It returns a resume token in the raw
 API and extends the session lease; ordinary test sessions are destroyed when
 their owning SDK closes or dies.
+
+Evidence is retained by default under the OS user cache directory at
+`labcontainers/artifacts/<session-id>` (on Linux, `$XDG_CACHE_HOME` or
+`~/.cache`). `Session.Artifacts()` or the generated session's
+`artifact_directory` field gives the actual path. Set `LabSpec.artifact_directory`
+to choose a different location. Cleanup removes runtime state and attached test
+disks, not this evidence. Retained files include the prepared native topology
+and event log, including timeline failures; they are user-private because a
+topology can contain credentials. They are not a complete guest log capture.
+Remove retained evidence explicitly when it is no longer needed.
+
+Kept sessions preserve their original state/disk/bootstrap paths even with a
+default private client. On owner close or exit, the child daemon cleans unkept
+sessions, stays available for inspection, and periodically reaps expired leases.
+Save `Client.Socket()` and `Client.StateDirectory()` in Go (`client.socket` and
+`client.state_directory` in Python; `socket`/`stateDirectory` in JavaScript).
+For Go CLI workflows, `DeployPersistent` saves the session ID and live daemon
+socket. `OpenPersistent` returns the connected client and session for ordinary
+SDK operations; close that client when finished. `DestroyPersistent` reconnects
+to that same daemon rather than launching a competing state owner. An existing
+reference blocks another deployment. Legacy references without a socket, and
+unreachable daemons, require explicit recovery; they do not trigger automatic
+daemon replacement. The reference-file check is not a cross-process deployment
+lock, so callers must serialize deployment of the same persistent lab.
+
+Reconnect with `Dial`/`dial` while the kept lease is active. Do not launch a
+second daemon on a live daemon's socket/state directory. Explicit session
+destruction still overrides a keep; automatic owner cleanup does not, including
+keeps issued through the raw RPC API.
+
+An explicit second termination signal stops a detached daemon without erasing
+kept records; restart it with the same state directory to resume cleanup. A
+daemon crash or host reboot cannot enforce leases until it is restarted.
+Use an explicitly persistent state directory for retention across host reboot;
+default private directories are in the host's temporary directory. Empty private
+directory shells can remain after detached lease expiry; session disks and
+runtime resources are removed, while diagnostic artifacts remain separately.
 
 ## VM nodes
 
@@ -133,6 +531,7 @@ and ISO requirements.
 
 ```sh
 make generate
+make generate-containerlab
 make test
 make build
 ```

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/appmana/labcontainers/internal/transferlimits"
 )
 
 const (
@@ -27,6 +29,8 @@ const (
 
 type Agent struct {
 	mu     sync.Mutex
+	once   sync.Once
+	gate   chan struct{}
 	conn   net.Conn
 	reader *bufio.Reader
 	Socket string
@@ -117,9 +121,17 @@ func dialUntilReady(ctx context.Context, network, address string) (net.Conn, err
 }
 
 func (a *Agent) Call(ctx context.Context, command string, args, into any) (err error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.once.Do(func() { a.gate = make(chan struct{}, 1) })
+	select {
+	case a.gate <- struct{}{}:
+		defer func() { <-a.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	defer func() {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		if err != nil && a.conn != nil {
 			_ = a.conn.Close()
 			a.conn = nil
@@ -128,12 +140,26 @@ func (a *Agent) Call(ctx context.Context, command string, args, into any) (err e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if a.conn == nil {
+	newConnection := a.conn == nil
+	if newConnection {
 		a.conn, err = dialUntilReady(ctx, "unix", a.socket())
 		if err != nil {
 			return err
 		}
 		a.reader = bufio.NewReader(a.conn)
+	}
+	// Socket deadlines alone do not react to cancellation before a deadline.
+	// Stop the callback before releasing the gate to the next request.
+	conn := a.conn
+	interrupted := make(chan struct{})
+	// Closing cannot be undone by a concurrent SetDeadline below.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close(); close(interrupted) })
+	defer func() {
+		if !stop() {
+			<-interrupted
+		}
+	}()
+	if newConnection {
 		_ = a.conn.SetDeadline(callDeadline(ctx, 10*time.Minute))
 		token := time.Now().UnixNano() & ((1 << 52) - 1)
 		request, _ := marshalCommand("guest-sync-delimited", map[string]any{"id": token})
@@ -302,7 +328,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var result Result
 	var input []byte
 	if req.Header.Get("X-Stdin") == "1" {
-		input, err = io.ReadAll(io.LimitReader(req.Body, 64<<20))
+		input, err = io.ReadAll(http.MaxBytesReader(w, req.Body, transferlimits.GuestExecStdin))
 	}
 	if err == nil {
 		guestOS, osErr := s.Agent.OS(ctx)
@@ -325,6 +351,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *Server) servePut(w http.ResponseWriter, req *http.Request) {
+	if req.ContentLength > transferlimits.Upload {
+		http.Error(w, "upload exceeds maximum payload size", http.StatusRequestEntityTooLarge)
+		return
+	}
 	path := req.Header.Get("X-Path")
 	mode, err := strconv.ParseUint(req.Header.Get("X-Mode"), 8, 32)
 	if path == "" || err != nil {
@@ -356,7 +386,7 @@ func (s *Server) servePut(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if err == nil {
-		err = s.Agent.Upload(ctx, io.LimitReader(req.Body, 256<<20), path)
+		err = s.Agent.Upload(ctx, http.MaxBytesReader(w, req.Body, transferlimits.Upload), path)
 	}
 	if err == nil && !isWindowsOS(guestOS) {
 		var changed Result

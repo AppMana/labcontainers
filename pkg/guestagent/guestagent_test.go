@@ -52,6 +52,42 @@ func TestExecutePreservesObservedResult(t *testing.T) {
 	}
 }
 
+func TestCallCancellationInterruptsSocketAndQueue(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	a := &Agent{conn: client, reader: bufio.NewReader(client)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { first <- a.Call(ctx, "guest-ping", nil, nil) }()
+	// Observe the first request, then deliberately withhold its reply.
+	if _, err := bufio.NewReader(server).ReadBytes('\n'); err != nil {
+		t.Fatal(err)
+	}
+	queued, done := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer done()
+	second := make(chan error, 1)
+	go func() { second <- a.Call(queued, "guest-ping", nil, nil) }()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("queued request: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued call ignored its deadline")
+	}
+	cancel()
+	select {
+	case err := <-first:
+		if err == nil {
+			t.Fatal("canceled socket returned success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("socket ignored cancellation")
+	}
+}
+
 func TestReadSkipsStaleDelimitedData(t *testing.T) {
 	a := &Agent{reader: bufio.NewReader(strings.NewReader("stale\n\xff{\"return\":123}\n"))}
 

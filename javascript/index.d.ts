@@ -5,6 +5,7 @@ export interface ExecResult { stdout: Buffer; stderr: Buffer; exitCode: number }
 
 export class Client {
   readonly socket: string;
+  readonly stateDirectory?: string;
   static dial(socket: string): Promise<Client>;
   static launch(options?: ClientOptions): Promise<Client>;
   start(spec: object, options?: StartOptions): Promise<Session>;
@@ -26,6 +27,8 @@ export class Node {
   powerOff(): Promise<void>;
   start(): Promise<void>;
   restart(): Promise<void>;
+  prepareReplacement(bootstrap?: object): Promise<void>;
+  /** @deprecated Preparation only; requires subsequent explicit Plan/Apply. */
   replace(bootstrap?: object): Promise<void>;
 }
 export class Fault { readonly id: string; revert(): Promise<void> }

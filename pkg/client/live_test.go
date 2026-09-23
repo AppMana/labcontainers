@@ -4,11 +4,19 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
+	clab "github.com/appmana/labcontainers/pkg/containerlab"
+	"github.com/appmana/labcontainers/pkg/kubernetes/kube"
+	"github.com/srl-labs/containerlab/core"
+	"github.com/srl-labs/containerlab/links"
+	"github.com/srl-labs/containerlab/types"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // TestLive exercises the public Go SDK through a real labd, Containerlab, and
@@ -27,16 +35,203 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var evidence string
 	defer func() {
 		if err := c.Close(); err != nil {
 			t.Errorf("close: %v", err)
 		}
+		if evidence != "" {
+			for _, file := range []string{"events.jsonl", "topology.clab.yml"} {
+				if _, err := os.Stat(filepath.Join(evidence, file)); err != nil {
+					t.Errorf("evidence lost after client close: %v", err)
+				}
+			}
+			t.Logf("retained evidence: %s", evidence)
+		}
 	}()
-	lab, err := c.Start(ctx, &labv1.LabSpec{Topology: &labv1.TopologySource{
-		Source: &labv1.TopologySource_Path{Path: filepath.Join(root, "examples", "basic", "basic.clab.yml")},
-	}}, 5*time.Minute)
+	prefix := "native-sdk"
+	topology, err := clab.Source(&core.Config{Name: "basic", Prefix: &prefix, Topology: &types.Topology{
+		Defaults: &types.NodeDefinition{Kind: "linux", Image: "alpine:3.20", NetworkMode: "none"},
+		Nodes: map[string]*types.NodeDefinition{
+			"client": {Exec: []string{"ip addr add 192.0.2.1/24 dev eth0"}},
+			"server": {Exec: []string{"ip addr add 192.0.2.2/24 dev eth0"}},
+		},
+		Links: []*links.LinkDefinition{{Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth0", "server:eth0"}}}},
+	}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	lab, err := c.Start(ctx, &labv1.LabSpec{Topology: topology}, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence = lab.Artifacts()
+	// Optional fixture helpers must work through an ordinary session node,
+	// without a product-defined VM adapter or an additional network path.
+	commands := lab.Node("client").Commands()
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "native-object"},
+		"data":     map[string]any{"content": "literal: value"},
+	}}
+	if err := kube.WriteObjects(ctx, commands, "/tmp/native-object.yaml", 0o600, object); err != nil {
+		t.Fatal(err)
+	}
+	data, err := commands.Exec(ctx, "cat", "/tmp/native-object.yaml")
+	if err != nil || !strings.Contains(string(data), "native-object") {
+		t.Fatalf("native object upload/read failed: %s %v", data, err)
+	}
+	data, err = commands.Pipe(ctx, strings.NewReader("unchanged stdin"), "cat")
+	if err != nil || string(data) != "unchanged stdin" {
+		t.Fatalf("stdin changed: %q %v", data, err)
+	}
+	plan, err := lab.Plan(ctx, topology)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.DryRun || plan.DeployedLab || len(plan.RecreatedNodes)+len(plan.RestartedNodes)+len(plan.AddedNodes)+len(plan.DeletedNodes) != 0 {
+		t.Fatalf("unchanged native draft unexpectedly changes nodes: %+v", plan)
+	}
+	// Native v0.79 ownership discovery unconditionally excludes eth0, even
+	// when it is an explicitly declared data interface with network-mode none.
+	// Preserve this native diagnostic, rather than claiming a no-op plan or
+	// filtering away a potentially disruptive link operation.
+	if os.Getenv("LABCONTAINERS_RECONCILE_LIVE") != "" {
+		if len(plan.AddedLinks)+len(plan.DeletedEndpoints) != 0 {
+			t.Fatalf("unchanged declared data eth0 must be a native no-op: %+v", plan)
+		}
+	} else if len(plan.AddedLinks) != 1 || plan.AddedLinks[0] != "client:eth0 -- server:eth0" {
+		t.Fatalf("native eth0 reconciliation behavior changed; requalify it: %+v", plan)
+	}
+	t.Logf("native unchanged-topology result: %+v", plan)
+	draftConfig := &core.Config{Prefix: &prefix, Topology: &types.Topology{
+		Defaults: &types.NodeDefinition{Kind: "linux", Image: "alpine:3.20", NetworkMode: "none"},
+		Nodes: map[string]*types.NodeDefinition{
+			"client": {Exec: []string{"ip addr add 192.0.2.1/24 dev eth0"}},
+			"server": {Exec: []string{"ip addr add 192.0.2.2/24 dev eth0"}},
+			"adhoc":  {Exec: []string{"ip addr add 192.0.3.2/24 dev eth1"}},
+		},
+		Links: []*links.LinkDefinition{
+			{Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth0", "server:eth0"}}},
+			{Link: &links.LinkBriefRaw{Endpoints: []string{"client:eth1", "adhoc:eth1"}}},
+		},
+	}}
+	draft, err := clab.Source(draftConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err = lab.Plan(ctx, draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.AddedNodes) != 1 || plan.AddedNodes[0] != "adhoc" || len(plan.RecreatedNodes)+len(plan.RestartedNodes)+len(plan.DeletedNodes) != 0 {
+		t.Fatalf("native addition plan = %+v", plan)
+	}
+	draftConfig.Topology.Nodes["client"].Cmd = "sleep 100000"
+	disruptive, err := clab.Source(draftConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact, err := lab.Plan(ctx, disruptive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(impact.RecreatedNodes) != 1 || impact.RecreatedNodes[0] != "client" || impact.NodeChangeReasons["client"] == "" {
+		t.Fatalf("native recreation impact missing: %+v", impact)
+	}
+	unchanged, err := lab.Plan(ctx, nil)
+	if err != nil || len(unchanged.AddedNodes) != 0 {
+		t.Fatalf("draft changed authoritative topology: result=%+v error=%v", unchanged, err)
+	}
+	if os.Getenv("LABCONTAINERS_RECONCILE_LIVE") != "" {
+		identity := func() string {
+			t.Helper()
+			out, err := exec.CommandContext(ctx, "docker", "ps", "--no-trunc", "--filter", "label=labcontainers.appmana.com/session="+lab.ID(), "--filter", "label=clab-node-name=client", "--format", "{{.ID}}").Output()
+			if err != nil || strings.TrimSpace(string(out)) == "" {
+				t.Fatalf("client runtime identity: %s %v", out, err)
+			}
+			state, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.Id}} {{.State.StartedAt}}", strings.TrimSpace(string(out))).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(state)
+		}
+		before := identity()
+		if err := lab.Apply(ctx, draft, plan, nil); err != nil {
+			t.Fatal(err)
+		}
+		if identity() != before {
+			t.Fatal("adding an ad hoc node replaced an unrelated container")
+		}
+		added, err := lab.Node("adhoc").Exec(ctx, "true")
+		if err != nil || added.GetExitCode() != 0 {
+			t.Fatalf("added node not executable: %v %v", added, err)
+		}
+		configured, err := lab.Node("client").Exec(ctx, "ip", "addr", "add", "192.0.3.1/24", "dev", "eth1")
+		if err != nil || configured.GetExitCode() != 0 {
+			t.Fatalf("new link configuration failed: %v %v", configured, err)
+		}
+		probe, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "2", "192.0.3.2")
+		if err != nil || probe.GetExitCode() != 0 {
+			t.Fatalf("new declared link has no reachability: %v %v", probe, err)
+		}
+		remove, err := lab.Plan(ctx, topology)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(remove.DeletedNodes) != 1 || remove.DeletedNodes[0] != "adhoc" || len(remove.RecreatedNodes)+len(remove.RestartedNodes) != 0 {
+			t.Fatalf("unexpected removal impact: %+v", remove)
+		}
+		if err := lab.Apply(ctx, topology, remove, nil); err != nil {
+			t.Fatal(err)
+		}
+		if identity() != before {
+			t.Fatal("removing an ad hoc node replaced an unrelated container")
+		}
+		if _, err := lab.Node("adhoc").Exec(ctx, "true"); err == nil {
+			t.Fatal("removed node still exposed")
+		}
+		if err := lab.Node("server").PrepareReplacement(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lab.Node("server").Exec(ctx, "true"); err == nil {
+			t.Fatal("replacement preparation silently recreated the target")
+		}
+		if identity() != before {
+			t.Fatal("preparing replacement restarted the other node")
+		}
+		replacement, err := lab.Plan(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if replacement.DeployedLab || len(replacement.DeletedNodes) != 0 {
+			t.Fatalf("unexpected replacement impact: %+v", replacement)
+		}
+		for _, names := range [][]string{replacement.AddedNodes, replacement.RecreatedNodes, replacement.RestartedNodes, replacement.StartedNodes} {
+			for _, name := range names {
+				if name != "server" {
+					t.Fatalf("replacement would affect another node: %+v", replacement)
+				}
+			}
+		}
+		t.Logf("explicit replacement plan: %+v", replacement)
+		if err := lab.Apply(ctx, nil, replacement, nil); err != nil {
+			t.Fatal(err)
+		}
+		if identity() != before {
+			t.Fatal("approved replacement restarted the other node")
+		}
+		// Native filtered destroy deletes both veth ends. The approved plan
+		// exposes the recreated link, but clab does not replay configuration
+		// on an unchanged peer. This scenario explicitly configures its new
+		// endpoint; replacement must not silently restart/reconfigure peers.
+		if len(replacement.AddedLinks) != 1 || replacement.AddedLinks[0] != "client:eth0 -- server:eth0" {
+			t.Fatalf("missing peer endpoint impact: %+v", replacement)
+		}
+		configured, err = lab.Node("client").Exec(ctx, "ip", "address", "replace", "192.0.2.1/24", "dev", "eth0")
+		if err != nil || configured.GetExitCode() != 0 {
+			t.Fatalf("explicit peer endpoint configuration: %v %v", configured, err)
+		}
 	}
 	result, err := lab.Node("client").Exec(ctx, "ping", "-c", "1", "192.0.2.2")
 	if err != nil {
@@ -44,6 +239,72 @@ func TestLive(t *testing.T) {
 	}
 	if result.GetExitCode() != 0 {
 		t.Fatalf("ping exited %d: %s", result.GetExitCode(), result.GetStderr())
+	}
+	impairment, err := lab.Netem(ctx, "client", "eth0", &labv1.Netem{LossPercent: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "1", "192.0.2.2")
+	if err != nil || result.GetExitCode() == 0 {
+		t.Fatalf("100%% packet loss did not cut reachability: result=%v error=%v", result, err)
+	}
+	if err := impairment.Revert(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fault, err := lab.SetLink(ctx, "client", "eth0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := c.RPC().GetSession(ctx, &labv1.SessionRef{Id: lab.ID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, recovery := range inspection.Faults {
+		if recovery.Id == fault.ID() {
+			found = true
+			if !recovery.Active || recovery.Node != "client" || recovery.Interface != "eth0" || recovery.RestoreUp == nil || !recovery.GetRestoreUp() {
+				t.Fatalf("incomplete live recovery record: %v", recovery)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("live session inspection omitted active link fault")
+	}
+	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "1", "192.0.2.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GetExitCode() == 0 {
+		t.Fatal("reachability survived cutting the only declared path")
+	}
+	if err := fault.Revert(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "2", "192.0.2.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.GetExitCode() != 0 {
+		t.Fatalf("reachability not restored: %s", result.GetStderr())
+	}
+	// Reverting a no-op down request must not bring a previously-down cable up.
+	if _, err := commands.Exec(ctx, "ip", "link", "set", "eth0", "down"); err != nil {
+		t.Fatal(err)
+	}
+	alreadyDown, err := lab.SetLink(ctx, "client", "eth0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alreadyDown.Revert(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result, err = lab.Node("client").Exec(ctx, "ping", "-c", "1", "-W", "1", "192.0.2.2")
+	if err != nil || result.GetExitCode() == 0 {
+		t.Fatalf("rollback enabled a previously-down link: %v %v", result, err)
+	}
+	if _, err := commands.Exec(ctx, "ip", "link", "set", "eth0", "up"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -69,9 +330,9 @@ func TestLiveVM(t *testing.T) {
 			t.Errorf("close: %v", err)
 		}
 	}()
-	topology := []byte("name: ignored\ntopology:\n  nodes:\n    vm:\n      kind: generic_vm\n      image: labcontainers/vm-ubuntu:jammy\n      network-mode: none\n    peer:\n      kind: linux\n      image: alpine:3.20\n      network-mode: none\n  links:\n    - endpoints: [vm:eth1, peer:eth1]\n")
+	topology := vmTopology(t, "labcontainers/vm-ubuntu:jammy")
 	lab, err := c.Start(ctx, &labv1.LabSpec{
-		Topology: &labv1.TopologySource{Source: &labv1.TopologySource_Yaml{Yaml: topology}},
+		Topology: topology,
 		Nodes: map[string]*labv1.NodeExtension{"vm": {
 			Control: "qga",
 			Disks:   []*labv1.Disk{{Name: "volume", SizeBytes: 1 << 30}},
@@ -103,11 +364,27 @@ func TestLiveVM(t *testing.T) {
 	if err := node.PowerOff(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := node.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
+	recoverVM(t, ctx, lab, "vm")
 	result := waitExec("mkdir -p /mnt/volume; mount /dev/disk/by-id/virtio-lc-volume /mnt/volume; cat /mnt/volume/marker")
 	if got := string(result.GetStdout()); got != "durable" {
 		t.Fatalf("marker after abrupt power cycle = %q", got)
 	}
+}
+
+// Both operating-system tests use the same native Containerlab objects. The
+// generic SDK does not impose a Kubernetes fixture or its own VM node schema.
+func vmTopology(t *testing.T, image string) *labv1.TopologySource {
+	t.Helper()
+	source, err := clab.Source(&core.Config{Name: "vm", Topology: &types.Topology{
+		Defaults: &types.NodeDefinition{NetworkMode: "none"},
+		Nodes: map[string]*types.NodeDefinition{
+			"vm":   {Kind: "generic_vm", Image: image},
+			"peer": {Kind: "linux", Image: "alpine:3.20"},
+		},
+		Links: []*links.LinkDefinition{{Link: &links.LinkBriefRaw{Endpoints: []string{"vm:eth1", "peer:eth1"}}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
 }

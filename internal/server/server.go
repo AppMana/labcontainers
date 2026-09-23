@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,8 +20,10 @@ import (
 	"github.com/appmana/labcontainers/internal/session"
 	"github.com/appmana/labcontainers/pkg/bootstrap"
 	"github.com/appmana/labcontainers/pkg/spec"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const defaultTTL = 2 * time.Hour
@@ -29,16 +32,22 @@ var diskNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 var labNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
 type Backend interface {
+	RestoreAttachments(context.Context, string, string) error
+	CheckSessionOwnership(context.Context, string, string) error
+	CheckLabNameAvailable(context.Context, string) error
 	Doctor(context.Context) error
 	Validate(context.Context, string) error
 	Deploy(context.Context, string) error
+	Plan(context.Context, string) ([]byte, error)
 	ProofIsolation(context.Context, string, []string) error
+	ContainerName(context.Context, string, string) (string, error)
 	Destroy(context.Context, string) error
 	Lifecycle(context.Context, string, string, string) error
-	Replace(context.Context, string, string) error
+	RemoveNode(context.Context, string, string) error
 	Exec(context.Context, string, string, string, time.Duration, []byte, []string) (engine.Result, error)
 	Put(context.Context, string, string, string, string, uint32, []byte) error
 	SetLink(context.Context, string, string, string, string, bool) error
+	LinkUp(context.Context, string, string, string, string) (bool, error)
 	Netem(context.Context, string, string, time.Duration, time.Duration, float64, uint64, float64) error
 	ResetNetem(context.Context, string, string) error
 }
@@ -120,12 +129,16 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	artifacts := filepath.Join(dir, "artifacts")
-	if requested := req.GetSpec().GetArtifactDirectory(); requested != "" {
-		artifacts = requested
+	if err := s.Backend.CheckLabNameAvailable(ctx, name); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "lab name preflight: %v", err)
+	}
+	artifacts, err := artifactDirectory(req.GetSpec().GetArtifactDirectory(), id)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	record := &session.Record{
-		ID: id, Name: prepared.Name, State: "provisioning",
+		AllowExternalAccess: req.GetSpec().GetAllowExternalAccess(),
+		ID:                  id, Name: prepared.Name, State: "provisioning",
 		TopologyPath: filepath.Join(dir, "topology.clab.yml"), ArtifactDirectory: artifacts,
 		Expires: time.Now().UTC().Add(ttl), ResumeToken: resume,
 		Nodes: map[string]*session.Node{}, Faults: map[string]*session.Fault{}, Labels: req.GetLabels(),
@@ -156,25 +169,29 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 	if err := os.WriteFile(record.TopologyPath, prepared.YAML, 0o600); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	if err := os.WriteFile(filepath.Join(artifacts, "topology.clab.yml"), prepared.YAML, 0o600); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 	s.event(record, "session.prepared", map[string]any{"nodes": prepared.Nodes})
 	if err := s.Backend.Validate(ctx, record.TopologyPath); err != nil {
 		record.State = "failed"
 		_ = s.Store.Save(record)
-		return nil, status.Errorf(codes.InvalidArgument, "Containerlab validation failed for session %s: %v", id, err)
+		s.event(record, "session.failed", map[string]any{"stage": "validate", "error": err.Error()})
+		return nil, status.Errorf(codes.InvalidArgument, "Containerlab validation failed for session %s (evidence: %s): %v", id, artifacts, err)
 	}
 	if err := s.Backend.Deploy(ctx, record.TopologyPath); err != nil {
 		record.State = "failed"
 		_ = s.Store.Save(record)
+		s.event(record, "session.failed", map[string]any{"stage": "deploy", "error": err.Error()})
 		_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
-		return nil, status.Errorf(codes.Internal, "deploy session %s: %v", id, err)
+		return nil, status.Errorf(codes.Internal, "deploy session %s (evidence: %s): %v", id, artifacts, err)
 	}
-	if !req.GetSpec().GetAllowExternalAccess() {
-		if err := s.Backend.ProofIsolation(ctx, record.Name, prepared.TestNodes); err != nil {
-			record.State = "failed"
-			_ = s.Store.Save(record)
-			_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
-			return nil, status.Errorf(codes.FailedPrecondition, "isolation proof failed for session %s: %v", id, err)
-		}
+	if err := s.Backend.ProofIsolation(ctx, record.Name, prepared.IsolatedNodes); err != nil {
+		record.State = "failed"
+		_ = s.Store.Save(record)
+		s.event(record, "session.failed", map[string]any{"stage": "isolation", "error": err.Error()})
+		_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
+		return nil, status.Errorf(codes.FailedPrecondition, "isolation proof failed for session %s (evidence: %s): %v", id, artifacts, err)
 	}
 	record.State = "running"
 	for _, node := range record.Nodes {
@@ -204,6 +221,9 @@ func (s *Server) DestroySession(ctx context.Context, req *labv1.DestroySessionRe
 	}
 	if req.GetResumeToken() != "" && req.GetResumeToken() != r.ResumeToken {
 		return nil, status.Error(codes.PermissionDenied, "invalid resume token")
+	}
+	if req.GetPreserveKept() && r.Kept {
+		return &labv1.Empty{}, nil
 	}
 	if err := s.Backend.Destroy(ctx, r.TopologyPath); err != nil {
 		return nil, status.Errorf(codes.Internal, "destroy session: %v", err)
@@ -244,6 +264,9 @@ func (s *Server) Exec(ctx context.Context, req *labv1.ExecRequest) (*labv1.ExecR
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
+	if n.Control == "qga" && len(req.GetStdin()) > labv1.MaxGuestExecStdinBytes {
+		return nil, status.Error(codes.InvalidArgument, "QGA exec stdin exceeds 64 MiB; transfer files explicitly instead")
+	}
 	result, runErr := s.Backend.Exec(ctx, r.Name, n.Name, n.Control, timeout, req.GetStdin(), req.GetArgv())
 	if runErr != nil {
 		return nil, status.Errorf(codes.Internal, "exec: %v", runErr)
@@ -277,6 +300,8 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 	}
 	var action string
 	switch req.GetAction() {
+	case labv1.LifecycleAction_CRASH:
+		action = "crash"
 	case labv1.LifecycleAction_POWER_OFF:
 		action = "stop"
 	case labv1.LifecycleAction_START:
@@ -289,6 +314,35 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 		return nil, status.Error(codes.InvalidArgument, "lifecycle action is required")
 	}
 	if action == "replace" {
+		for _, fault := range r.Faults {
+			if fault.Active {
+				return nil, status.Error(codes.FailedPrecondition, "revert active faults before preparing replacement")
+			}
+		}
+		if err := s.Backend.CheckSessionOwnership(ctx, r.Name, r.ID); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+		// Validate caller data before stopping anything; only publish it after
+		// the old VM no longer holds the bootstrap and disposable disk files.
+		if len(req.GetBootstrap().GetValue()) != 0 {
+			if err := (bootstrap.Data{Format: req.GetBootstrap().GetFormat(), Value: req.GetBootstrap().GetValue()}).Validate(); err != nil {
+				return nil, status.Error(codes.InvalidArgument, err.Error())
+			}
+			if n.Control != "qga" || (n.BootstrapFormat != "" && n.BootstrapFormat != req.GetBootstrap().GetFormat()) {
+				return nil, status.Error(codes.InvalidArgument, "replacement bootstrap requires qga control and cannot change an existing format")
+			}
+		}
+		s.event(r, "node.replace.requested", map[string]any{"node": n.Name})
+		if err := s.Backend.RemoveNode(ctx, r.TopologyPath, n.Name); err != nil {
+			n.State = "unknown"
+			_ = s.Store.Save(r)
+			s.event(r, "node.replace.failed", map[string]any{"node": n.Name, "error": err.Error()})
+			return nil, status.Errorf(codes.Internal, "remove node before replacement: %v", err)
+		}
+		n.State = "replacement-pending"
+		if err := s.Store.Save(r); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
 		if len(req.GetBootstrap().GetValue()) != 0 {
 			if err := s.configureBootstrap(r, n, req.GetBootstrap()); err != nil {
 				return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -300,16 +354,28 @@ func (s *Server) Lifecycle(ctx context.Context, req *labv1.LifecycleRequest) (*l
 		if err := resetDisks(n.Disks); err != nil {
 			return nil, status.Errorf(codes.Internal, "reset node disks: %v", err)
 		}
-		err = s.Backend.Replace(ctx, r.TopologyPath, n.Name)
 	} else {
+		s.event(r, "node."+action+".requested", map[string]any{"node": n.Name})
 		err = s.Backend.Lifecycle(ctx, r.TopologyPath, n.Name, action)
 	}
 	if err != nil {
+		n.State = "unknown"
+		_ = s.Store.Save(r)
+		s.event(r, "node."+action+".failed", map[string]any{"node": n.Name, "error": err.Error()})
 		return nil, status.Errorf(codes.Internal, "%s node: %v", action, err)
 	}
-	if action == "stop" {
+	if action == "replace" {
+		n.State = "replacement-pending"
+	} else if action == "stop" || action == "crash" {
 		n.State = "stopped"
 	} else {
+		// A native start may return success after an auto-removed VM vanished.
+		// Verify runtime truth; never report a running node based on exit status.
+		if err := s.verifyRunningNode(ctx, r, n.Name); err != nil {
+			n.State = "unknown"
+			_ = s.Store.Save(r)
+			return nil, status.Errorf(codes.FailedPrecondition, "native %s did not establish a verified running node: %v; review Plan(nil) and Apply(nil, approvedPlan) for explicit recovery", action, err)
+		}
 		n.State = "running"
 	}
 	if err := s.Store.Save(r); err != nil {
@@ -331,24 +397,41 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	f := &session.Fault{ID: id, Node: req.GetNode(), Interface: req.GetInterface(), Active: true}
+	var apply func() error
 	switch fault := req.GetFault().(type) {
 	case *labv1.ApplyFaultRequest_Netem:
 		if f.Node == "" || f.Interface == "" {
 			return nil, status.Error(codes.InvalidArgument, "netem requires node and interface")
 		}
 		f.Kind = "netem"
-		container := "clab-" + r.Name + "-" + f.Node
-		if err := s.Backend.Netem(ctx, container, f.Interface, time.Duration(fault.Netem.GetDelayMillis())*time.Millisecond, time.Duration(fault.Netem.GetJitterMillis())*time.Millisecond, fault.Netem.GetLossPercent(), fault.Netem.GetRateKbit(), fault.Netem.GetCorruptionPercent()); err != nil {
-			return nil, status.Errorf(codes.Internal, "apply netem: %v", err)
+		if r.Nodes[f.Node] == nil {
+			return nil, status.Error(codes.InvalidArgument, "netem requires a known node")
+		}
+		container, err := s.Backend.ContainerName(ctx, r.Name, f.Node)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "resolve netem node: %v", err)
+		}
+		apply = func() error {
+			return s.Backend.Netem(ctx, container, f.Interface, time.Duration(fault.Netem.GetDelayMillis())*time.Millisecond, time.Duration(fault.Netem.GetJitterMillis())*time.Millisecond, fault.Netem.GetLossPercent(), fault.Netem.GetRateKbit(), fault.Netem.GetCorruptionPercent())
 		}
 	case *labv1.ApplyFaultRequest_LinkState:
 		n := r.Nodes[fault.LinkState.GetNode()]
 		if n == nil || fault.LinkState.GetInterface() == "" {
 			return nil, status.Error(codes.InvalidArgument, "link state requires a known node and interface")
 		}
-		f.Kind, f.Node, f.Interface, f.RestoreUp = "link-state", n.Name, fault.LinkState.GetInterface(), !fault.LinkState.GetUp()
-		if err := s.Backend.SetLink(ctx, r.Name, n.Name, n.Control, f.Interface, fault.LinkState.GetUp()); err != nil {
-			return nil, status.Errorf(codes.Internal, "set link state: %v", err)
+		f.Kind, f.Node, f.Interface = "link-state", n.Name, fault.LinkState.GetInterface()
+		for _, existing := range r.Faults {
+			if existing.Active && existing.Kind == f.Kind && existing.Node == f.Node && existing.Interface == f.Interface {
+				return nil, status.Error(codes.FailedPrecondition, "revert the active link-state fault on this endpoint before applying another")
+			}
+		}
+		priorUp, err := s.Backend.LinkUp(ctx, r.Name, n.Name, n.Control, f.Interface)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "observe link state before fault: %v", err)
+		}
+		f.RestoreUp = priorUp
+		apply = func() error {
+			return s.Backend.SetLink(ctx, r.Name, n.Name, n.Control, f.Interface, fault.LinkState.GetUp())
 		}
 	case *labv1.ApplyFaultRequest_Partition:
 		return nil, status.Error(codes.Unimplemented, "group partitions require the host bridge filter backend")
@@ -359,8 +442,23 @@ func (s *Server) ApplyFault(ctx context.Context, req *labv1.ApplyFaultRequest) (
 	if err := s.Store.Save(r); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	// Persist the rollback record before touching the network. On an ambiguous
+	// backend failure keep it active: the operation may have partially applied.
+	s.event(r, "fault.prepared", f)
+	if err := apply(); err != nil {
+		s.event(r, "fault.apply_failed", f)
+		failure := status.New(codes.Internal, fmt.Sprintf("apply fault %s failed; rollback record remains active (RevertFault session_id=%s id=%s): %v", id, r.ID, id, err))
+		withDetails, detailErr := failure.WithDetails(&errdetails.ErrorInfo{
+			Reason: "FAULT_APPLY_FAILED", Domain: "labcontainers.appmana.com",
+			Metadata: map[string]string{"session_id": r.ID, "fault_id": id},
+		})
+		if detailErr == nil {
+			failure = withDetails
+		}
+		return nil, failure.Err()
+	}
 	s.event(r, "fault.applied", f)
-	return &labv1.Fault{Id: id, Kind: f.Kind, Active: true}, nil
+	return protoFault(f), nil
 }
 
 func (s *Server) RevertFault(ctx context.Context, ref *labv1.FaultRef) (*labv1.Empty, error) {
@@ -386,7 +484,11 @@ func (s *Server) revertFault(ctx context.Context, sessionID, faultID string) err
 	}
 	switch f.Kind {
 	case "netem":
-		if err := s.Backend.ResetNetem(ctx, "clab-"+r.Name+"-"+f.Node, f.Interface); err != nil {
+		container, err := s.Backend.ContainerName(ctx, r.Name, f.Node)
+		if err != nil {
+			return status.Errorf(codes.FailedPrecondition, "resolve netem node: %v", err)
+		}
+		if err := s.Backend.ResetNetem(ctx, container, f.Interface); err != nil {
 			return status.Errorf(codes.Internal, "reset netem: %v", err)
 		}
 	case "link-state":
@@ -409,6 +511,8 @@ func (s *Server) revertFault(ctx context.Context, sessionID, faultID string) err
 }
 
 func (s *Server) RunTimeline(ctx context.Context, req *labv1.RunTimelineRequest) (*labv1.TimelineResult, error) {
+	// Session scoping must not mutate caller-owned action objects.
+	req = proto.Clone(req).(*labv1.RunTimelineRequest)
 	started := time.Now()
 	created := make([]string, 0)
 	rollback := func() {
@@ -445,11 +549,20 @@ func (s *Server) RunTimeline(ctx context.Context, req *labv1.RunTimelineRequest)
 			_, err = s.RevertFault(ctx, a.RevertFault)
 		case *labv1.TimelineAction_Exec:
 			a.Exec.Node.SessionId = req.GetSessionId()
-			_, err = s.Exec(ctx, a.Exec)
+			var result *labv1.ExecResponse
+			result, err = s.Exec(ctx, a.Exec)
+			if err == nil && result.GetExitCode() != 0 {
+				err = status.Errorf(codes.FailedPrecondition, "guest command exited %d", result.GetExitCode())
+			}
+		case *labv1.TimelineAction_WaitExec:
+			err = s.waitExec(ctx, req.GetSessionId(), a.WaitExec)
 		default:
 			err = status.Error(codes.InvalidArgument, "timeline action is required")
 		}
 		if err != nil {
+			if r, loadErr := s.record(req.GetSessionId()); loadErr == nil {
+				s.event(r, "timeline.failed", map[string]any{"action": i, "error": err.Error()})
+			}
 			rollback()
 			return nil, status.Errorf(codes.Aborted, "timeline action %d: %v", i, err)
 		}
@@ -457,7 +570,59 @@ func (s *Server) RunTimeline(ctx context.Context, req *labv1.RunTimelineRequest)
 	return &labv1.TimelineResult{Completed: int32(len(req.GetActions())), FaultIds: created}, nil
 }
 
+func (s *Server) waitExec(ctx context.Context, sessionID string, wait *labv1.WaitExec) error {
+	if wait == nil || wait.GetExec() == nil || wait.GetExec().GetNode() == nil || len(wait.GetExec().GetArgv()) == 0 {
+		return status.Error(codes.InvalidArgument, "wait_exec requires an executable guest predicate")
+	}
+	retry := time.Duration(wait.GetRetryMillis()) * time.Millisecond
+	if retry <= 0 {
+		retry = 100 * time.Millisecond
+	}
+	timeout := time.Duration(wait.GetTimeoutMillis()) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if timeout > 10*time.Minute {
+		return status.Error(codes.InvalidArgument, "wait_exec timeout exceeds 10 minutes")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	execRequest := proto.Clone(wait.GetExec()).(*labv1.ExecRequest)
+	execRequest.Node.SessionId = sessionID
+	last := "no completed attempt"
+	for {
+		result, err := s.Exec(waitCtx, execRequest)
+		if waitCtx.Err() != nil {
+			// A process killed by the overall deadline often has exit=-1 and
+			// empty output. Preserve the preceding diagnostic instead.
+			return status.Errorf(codes.DeadlineExceeded, "wait_exec predicate not satisfied: %s", last)
+		}
+		if err == nil {
+			last = fmt.Sprintf("exit=%d stdout=%q stderr=%q", result.GetExitCode(), result.GetStdout(), result.GetStderr())
+			if result.GetExitCode() == wait.GetExpectedExitCode() &&
+				strings.Contains(string(result.GetStdout()), string(wait.GetStdoutContains())) &&
+				strings.Contains(string(result.GetStderr()), string(wait.GetStderrContains())) {
+				if r, loadErr := s.record(sessionID); loadErr == nil {
+					s.event(r, "timeline.predicate.matched", map[string]any{"node": execRequest.GetNode().GetNode()})
+				}
+				return nil
+			}
+		} else {
+			last = err.Error()
+		}
+		timer := time.NewTimer(retry)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return status.Errorf(codes.DeadlineExceeded, "wait_exec predicate not satisfied: %s", last)
+		case <-timer.C:
+		}
+	}
+}
+
 func (s *Server) Scavenge(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	records, err := s.Store.List()
 	if err != nil {
 		return err
@@ -471,6 +636,7 @@ func (s *Server) Scavenge(ctx context.Context, now time.Time) error {
 			errs = append(errs, fmt.Errorf("%s: %w", r.ID, err))
 			continue
 		}
+		s.event(r, "session.expired", nil)
 		if err := s.Store.Delete(r.ID); err != nil {
 			errs = append(errs, err)
 		}
@@ -479,6 +645,8 @@ func (s *Server) Scavenge(ctx context.Context, now time.Time) error {
 }
 
 func (s *Server) CleanupUnkept(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	records, err := s.Store.List()
 	if err != nil {
 		return err
@@ -492,6 +660,7 @@ func (s *Server) CleanupUnkept(ctx context.Context) error {
 			errs = append(errs, err)
 			continue
 		}
+		s.event(r, "session.destroyed", map[string]any{"reason": "owner exited"})
 		if err := s.Store.Delete(r.ID); err != nil {
 			errs = append(errs, err)
 		}
@@ -502,8 +671,15 @@ func (s *Server) CleanupUnkept(ctx context.Context) error {
 func topologyBytes(src *labv1.TopologySource) ([]byte, string, error) {
 	switch source := src.GetSource().(type) {
 	case *labv1.TopologySource_Yaml:
-		return source.Yaml, "", nil
+		base := src.GetBaseDirectory()
+		if base != "" && !filepath.IsAbs(base) {
+			return nil, "", errors.New("topology base_directory must be absolute")
+		}
+		return source.Yaml, base, nil
 	case *labv1.TopologySource_Path:
+		if src.GetBaseDirectory() != "" {
+			return nil, "", errors.New("topology base_directory is only supported with an in-memory source")
+		}
 		path, err := filepath.Abs(source.Path)
 		if err != nil {
 			return nil, "", fmt.Errorf("resolve topology: %w", err)
@@ -559,7 +735,21 @@ func protoSession(r *session.Record) *labv1.Session {
 		nodes = append(nodes, &labv1.Node{Name: n.Name, State: n.State})
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
-	return &labv1.Session{Id: r.ID, Name: r.Name, State: r.State, TopologyPath: r.TopologyPath, ArtifactDirectory: r.ArtifactDirectory, ExpiresUnix: r.Expires.Unix(), ResumeToken: r.ResumeToken, Nodes: nodes}
+	faults := make([]*labv1.Fault, 0, len(r.Faults))
+	for _, fault := range r.Faults {
+		faults = append(faults, protoFault(fault))
+	}
+	sort.Slice(faults, func(i, j int) bool { return faults[i].Id < faults[j].Id })
+	return &labv1.Session{Id: r.ID, Name: r.Name, State: r.State, TopologyPath: r.TopologyPath, ArtifactDirectory: r.ArtifactDirectory, ExpiresUnix: r.Expires.Unix(), ResumeToken: r.ResumeToken, Nodes: nodes, Faults: faults}
+}
+
+func protoFault(f *session.Fault) *labv1.Fault {
+	result := &labv1.Fault{Id: f.ID, Kind: f.Kind, Active: f.Active, Node: f.Node, Interface: f.Interface}
+	if f.Kind == "link-state" {
+		value := f.RestoreUp
+		result.RestoreUp = &value
+	}
+	return result
 }
 
 func randomID(bytes int) (string, error) {

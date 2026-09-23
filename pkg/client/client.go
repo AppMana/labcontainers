@@ -3,17 +3,22 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
+	"github.com/srl-labs/containerlab/core"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 type Options struct {
@@ -27,9 +32,15 @@ type Client struct {
 	rpc      labv1.LabcontainersClient
 	cmd      *exec.Cmd
 	tempDir  string
+	stateDir string
 	mu       sync.Mutex
 	sessions map[string]string
 }
+
+// RPC exposes the generated transport client without narrowing its request
+// types, call options, results, or errors. The Client still owns its connection
+// and child daemon; callers must keep it open while using this client.
+func (c *Client) RPC() labv1.LabcontainersClient { return c.rpc }
 
 // Launch starts a private labd child and connects to it.
 func Launch(ctx context.Context, opts Options) (*Client, error) {
@@ -67,7 +78,7 @@ func Launch(ctx context.Context, opts Options) (*Client, error) {
 		}
 		return nil, err
 	}
-	c.cmd, c.tempDir = cmd, tempDir
+	c.cmd, c.tempDir, c.stateDir = cmd, tempDir, opts.StateDir
 	return c, nil
 }
 
@@ -146,7 +157,7 @@ func (c *Client) Close() error {
 	defer cancel()
 	var first error
 	for id, token := range sessions {
-		if _, err := c.rpc.DestroySession(ctx, &labv1.DestroySessionRequest{Id: id, ResumeToken: token}); err != nil && first == nil {
+		if _, err := c.rpc.DestroySession(ctx, &labv1.DestroySessionRequest{Id: id, ResumeToken: token, PreserveKept: true}); err != nil && status.Code(err) != codes.NotFound && first == nil {
 			first = err
 		}
 	}
@@ -154,9 +165,16 @@ func (c *Client) Close() error {
 		first = err
 	}
 	if c.cmd != nil {
+		// Surviving records include kept sessions and failed cleanup. Preserve
+		// their disk/bootstrap paths and let labd enforce their leases after
+		// detaching from this owner. Never delete uncertain runtime state.
+		retain := retainState(c.stateDir)
 		_ = c.cmd.Process.Signal(os.Interrupt)
 		done := make(chan error, 1)
 		go func() { done <- c.cmd.Wait() }()
+		if retain {
+			return first
+		}
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
@@ -170,6 +188,22 @@ func (c *Client) Close() error {
 	return first
 }
 
+func retainState(root string) bool {
+	if root == "" {
+		return true
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "sessions"))
+	return err != nil || len(entries) != 0
+}
+
+// Socket is the local control endpoint. Save it before closing a client whose
+// kept session will be inspected through Dial while its lease remains active.
+func (c *Client) Socket() string { return strings.TrimPrefix(c.conn.Target(), "unix://") }
+
+// StateDirectory is the child daemon's configured state root. It can be reused
+// in Options after an explicit daemon stop; kept files must not be relocated.
+func (c *Client) StateDirectory() string { return c.stateDir }
+
 type Session struct {
 	client *Client
 	value  *labv1.Session
@@ -179,6 +213,39 @@ func (s *Session) ID() string             { return s.value.GetId() }
 func (s *Session) Name() string           { return s.value.GetName() }
 func (s *Session) Artifacts() string      { return s.value.GetArtifactDirectory() }
 func (s *Session) Node(name string) *Node { return &Node{session: s, name: name} }
+
+// Plan previews a native topology without applying it. A nil source reports
+// drift against the current topology. Results are Containerlab's own Go type.
+func (s *Session) Plan(ctx context.Context, source *labv1.TopologySource) (*core.ApplyResult, error) {
+	response, err := s.client.rpc.PlanTopology(ctx, &labv1.PlanTopologyRequest{SessionId: s.ID(), Topology: source})
+	if err != nil {
+		return nil, err
+	}
+	var result core.ApplyResult
+	if err := json.Unmarshal(response.GetJson(), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Apply reconciles a full native topology after rechecking the approved native
+// plan. Native failures can leave partial changes; inspect, retry, or destroy.
+func (s *Session) Apply(ctx context.Context, source *labv1.TopologySource, approved *core.ApplyResult, nodes map[string]*labv1.NodeExtension) error {
+	if approved == nil {
+		return fmt.Errorf("an approved native plan is required")
+	}
+	raw, err := json.Marshal(approved)
+	if err != nil {
+		return err
+	}
+	value, err := s.client.rpc.ApplyTopology(ctx, &labv1.ApplyTopologyRequest{
+		SessionId: s.ID(), Topology: source, ApprovedPlan: &labv1.NativeApplyResult{Json: raw}, Nodes: nodes,
+	})
+	if err == nil {
+		s.value = value
+	}
+	return err
+}
 
 func (s *Session) Keep(ctx context.Context, ttl time.Duration) error {
 	p, err := s.client.rpc.KeepSession(ctx, &labv1.KeepSessionRequest{Id: s.ID(), TtlSeconds: int64(ttl / time.Second)})
@@ -238,6 +305,11 @@ type Node struct {
 	name    string
 }
 
+// Ref returns the generated transport reference for this session-owned node.
+// It can be used with RPC for stdin, explicit deadlines, and other fields that
+// the convenience methods do not expose.
+func (n *Node) Ref() *labv1.NodeRef { return n.ref() }
+
 func (n *Node) Exec(ctx context.Context, argv ...string) (*labv1.ExecResponse, error) {
 	return n.session.client.rpc.Exec(ctx, &labv1.ExecRequest{Node: n.ref(), Argv: argv})
 }
@@ -247,6 +319,9 @@ func (n *Node) Put(ctx context.Context, path string, mode uint32, content []byte
 	return err
 }
 
+// Crash abruptly kills the node without guest shutdown. Attached disks persist.
+func (n *Node) Crash(ctx context.Context) error { return n.lifecycle(ctx, labv1.LifecycleAction_CRASH) }
+
 func (n *Node) PowerOff(ctx context.Context) error {
 	return n.lifecycle(ctx, labv1.LifecycleAction_POWER_OFF)
 }
@@ -254,14 +329,26 @@ func (n *Node) Start(ctx context.Context) error { return n.lifecycle(ctx, labv1.
 func (n *Node) Restart(ctx context.Context) error {
 	return n.lifecycle(ctx, labv1.LifecycleAction_RESTART)
 }
-func (n *Node) Replace(ctx context.Context) error {
-	return n.lifecycle(ctx, labv1.LifecycleAction_REPLACE)
-}
 
-// ReplaceWithBootstrap recreates the node and supplies new first-boot data.
-func (n *Node) ReplaceWithBootstrap(ctx context.Context, data *labv1.BootstrapData) error {
+// PrepareReplacement removes this runtime node and resets its disposable
+// disks. It leaves the node replacement-pending. Review Session.Plan(ctx, nil)
+// and call Session.Apply with that approved native plan to recreate it.
+// Optional bootstrap data is installed after removal, before recreation.
+func (n *Node) PrepareReplacement(ctx context.Context, data *labv1.BootstrapData) error {
 	_, err := n.session.client.rpc.Lifecycle(ctx, &labv1.LifecycleRequest{Node: n.ref(), Action: labv1.LifecycleAction_REPLACE, Bootstrap: data})
 	return err
+}
+
+// Replace prepares replacement; it does not deploy. Deprecated: use
+// PrepareReplacement followed by an explicitly reviewed Plan/Apply.
+func (n *Node) Replace(ctx context.Context) error {
+	return n.PrepareReplacement(ctx, nil)
+}
+
+// ReplaceWithBootstrap prepares replacement and new first-boot data, but does
+// not deploy. Deprecated: use PrepareReplacement and explicit Plan/Apply.
+func (n *Node) ReplaceWithBootstrap(ctx context.Context, data *labv1.BootstrapData) error {
+	return n.PrepareReplacement(ctx, data)
 }
 
 func (n *Node) lifecycle(ctx context.Context, action labv1.LifecycleAction) error {

@@ -10,12 +10,18 @@ import (
 	"github.com/appmana/labcontainers/pkg/bootstrap"
 )
 
-type Node interface {
+// Commands is the command/file subset used by installation and Kubernetes
+// helpers. It requires no VM lifecycle or network-fault implementation.
+type Commands interface {
 	Name() string
-	Interface(nth int) string
 	Exec(context.Context, ...string) ([]byte, error)
 	Pipe(context.Context, io.Reader, ...string) ([]byte, error)
 	Put(context.Context, io.Reader, string, fs.FileMode) error
+}
+
+type Node interface {
+	Commands
+	Interface(nth int) string
 	Cut(context.Context) error
 	Restore(context.Context) error
 	Kill(context.Context) error

@@ -9,6 +9,8 @@ service Labcontainers {
   rpc GetSession(SessionRef) returns (Session);
   rpc DestroySession(DestroySessionRequest) returns (Empty);
   rpc KeepSession(KeepSessionRequest) returns (Session);
+  rpc PlanTopology(PlanTopologyRequest) returns (NativeApplyResult);
+  rpc ApplyTopology(ApplyTopologyRequest) returns (Session);
   rpc Exec(ExecRequest) returns (ExecResponse);
   rpc Put(PutRequest) returns (Empty);
   rpc Lifecycle(LifecycleRequest) returns (Node);
@@ -19,11 +21,34 @@ service Labcontainers {
 
 message Empty {}
 
+message PlanTopologyRequest {
+  string session_id = 1;
+  // Omit to inspect drift against the current topology. Otherwise this is the
+  // proposed full native topology; planning does not deploy it.
+  TopologySource topology = 2;
+}
+
+// Containerlab core.ApplyResult JSON, without a parallel Labcontainers model.
+message NativeApplyResult { bytes json = 1; }
+
+message ApplyTopologyRequest {
+  string session_id = 1;
+  // Omit to reconcile runtime drift against the current desired topology.
+  TopologySource topology = 2;
+  // Required native dry-run result explicitly approved by the caller.
+  NativeApplyResult approved_plan = 3;
+  // Control channels for newly added nodes; existing node extensions persist.
+  map<string, NodeExtension> nodes = 4;
+}
+
 message TopologySource {
   oneof source {
     string path = 1;
     bytes yaml = 2;
   }
+  // Absolute directory for relative host binds in an in-memory topology.
+  // File sources already carry this context through their parent directory.
+  string base_directory = 3;
 }
 
 message NodeExtension {
@@ -71,11 +96,16 @@ message Session {
   int64 expires_unix = 6;
   string resume_token = 7;
   repeated Node nodes = 8;
+  // Recovery records, including faults whose application outcome is uncertain.
+  repeated Fault faults = 9;
 }
 
 message DestroySessionRequest {
   string id = 1;
   string resume_token = 2;
+  // Automatic owner cleanup leaves an explicitly kept session to its lease.
+  // Explicit destruction leaves this false.
+  bool preserve_kept = 3;
 }
 
 message KeepSessionRequest {
@@ -118,7 +148,11 @@ enum LifecycleAction {
   POWER_OFF = 1;
   START = 2;
   RESTART = 3;
+  // Removes this node and prepares fresh disks/bootstrap. Leaves it
+  // replacement-pending; explicit approved PlanTopology/ApplyTopology recreate it.
   REPLACE = 4;
+  // SIGKILL the VM wrapper and QEMU without guest shutdown or cache flush.
+  CRASH = 5;
 }
 
 message LifecycleRequest {
@@ -167,6 +201,12 @@ message Fault {
   string id = 1;
   string kind = 2;
   bool active = 3;
+  string node = 4;
+  string interface = 5;
+  // Observed administrative state restored by a link-state fault's rollback.
+  // Absent for other fault kinds. Active means rollback remains outstanding,
+  // not that backend application was confirmed successful.
+  optional bool restore_up = 6;
 }
 
 message TimelineAction {
@@ -176,7 +216,20 @@ message TimelineAction {
     ApplyFaultRequest apply_fault = 3;
     FaultRef revert_fault = 4;
     ExecRequest exec = 5;
+    WaitExec wait_exec = 6;
   }
+}
+
+// WaitExec retries a guest predicate until its result matches, then allows the
+// next timeline action to run. This makes event -> fault sequencing explicit
+// instead of relying on sleeps that can miss short-lived states.
+message WaitExec {
+  ExecRequest exec = 1;
+  int64 retry_millis = 2;
+  int64 timeout_millis = 3;
+  int32 expected_exit_code = 4;
+  bytes stdout_contains = 5;
+  bytes stderr_contains = 6;
 }
 
 message RunTimelineRequest {

@@ -12,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/srl-labs/containerlab/core"
 )
 
 const SupportedContainerlabVersion = "0.79.0"
@@ -29,23 +32,12 @@ type Inspection struct {
 	State string `json:"state"`
 }
 
-type runtimeInspection struct {
-	HostConfig struct {
-		NetworkMode string `json:"NetworkMode"`
-	} `json:"HostConfig"`
-	NetworkSettings struct {
-		Networks map[string]struct {
-			Gateway           string `json:"Gateway"`
-			IPAddress         string `json:"IPAddress"`
-			MacAddress        string `json:"MacAddress"`
-			IPv6Gateway       string `json:"IPv6Gateway"`
-			GlobalIPv6Address string `json:"GlobalIPv6Address"`
-		} `json:"Networks"`
-	} `json:"NetworkSettings"`
-}
-
 func NewContainerlab() *Containerlab {
-	return &Containerlab{Runner: ExecRunner{}, Binary: "containerlab", Sudo: os.Geteuid() != 0}
+	binary := os.Getenv("LABCONTAINERS_CONTAINERLAB")
+	if binary == "" {
+		binary = "containerlab"
+	}
+	return &Containerlab{Runner: ExecRunner{}, Binary: binary, Sudo: os.Geteuid() != 0}
 }
 
 func (c *Containerlab) argv(args ...string) []string {
@@ -94,23 +86,53 @@ func (c *Containerlab) Deploy(ctx context.Context, topology string) error {
 	return err
 }
 
+// Plan returns Containerlab's native core.ApplyResult JSON unchanged.
+func (c *Containerlab) Plan(ctx context.Context, topology string) ([]byte, error) {
+	result, err := c.run(ctx, nil, "deploy", "--topo", topology, "--dry-run", "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	var plan *core.ApplyResult
+	if err := json.Unmarshal(result.Stdout, &plan); err != nil || plan == nil || !plan.DryRun {
+		return nil, fmt.Errorf("Containerlab returned invalid dry-run apply-result JSON")
+	}
+	return result.Stdout, nil
+}
+
 // ProofIsolation verifies runtime truth after deployment instead of trusting topology intent.
 func (c *Containerlab) ProofIsolation(ctx context.Context, lab string, nodes []string) error {
 	for _, node := range nodes {
-		name := "clab-" + lab + "-" + node
+		name, err := c.containerID(ctx, lab, node)
+		if err != nil {
+			return err
+		}
 		r, err := checked(ctx, c.Runner, nil, "docker", "inspect", name)
 		if err != nil {
 			return fmt.Errorf("inspect isolation for %s: %w", node, err)
 		}
-		var inspections []runtimeInspection
+		var inspections []container.InspectResponse
 		if err := json.Unmarshal(r.Stdout, &inspections); err != nil || len(inspections) != 1 {
 			return fmt.Errorf("inspect isolation for %s: invalid Docker inspection", node)
 		}
 		inspection := inspections[0]
+		if inspection.ContainerJSONBase == nil || inspection.HostConfig == nil || inspection.NetworkSettings == nil {
+			return fmt.Errorf("inspect isolation for %s: missing Docker network state", node)
+		}
 		if inspection.HostConfig.NetworkMode != "none" {
 			return fmt.Errorf("node %s is not isolated: runtime network mode is %q, want none", node, inspection.HostConfig.NetworkMode)
 		}
+		if inspection.HostConfig.PublishAllPorts || len(inspection.HostConfig.PortBindings) != 0 {
+			return fmt.Errorf("node %s is not isolated: runtime host port publishing is configured", node)
+		}
+		for _, bindings := range inspection.NetworkSettings.Ports {
+			if len(bindings) != 0 {
+				return fmt.Errorf("node %s is not isolated: runtime has published host ports", node)
+			}
+		}
 		for networkName, network := range inspection.NetworkSettings.Networks {
+			if network == nil {
+				return fmt.Errorf("node %s: missing state for runtime network %q", node, networkName)
+			}
 			// Docker 29 reports its built-in `none` network as a bookkeeping
 			// endpoint. It is isolated as long as it has no usable L2/L3 identity.
 			if networkName != "none" || network.Gateway != "" || network.IPAddress != "" || network.MacAddress != "" || network.IPv6Gateway != "" || network.GlobalIPv6Address != "" {
@@ -151,38 +173,74 @@ func (c *Containerlab) Destroy(ctx context.Context, topology string) error {
 
 func (c *Containerlab) Lifecycle(ctx context.Context, topology, node, action string) error {
 	switch action {
+	case "crash", "stop", "restart":
+		if err := c.saveAttachments(ctx, topology, node); err != nil {
+			return fmt.Errorf("preserve peer attachments: %w", err)
+		}
+	}
+	if action == "crash" {
+		return c.crash(ctx, topology, node)
+	}
+	switch action {
 	case "stop", "start", "restart":
 	default:
 		return fmt.Errorf("unknown lifecycle action %q", action)
 	}
 	_, lifecycleErr := c.run(ctx, nil, action, "--topo", topology, "--node", node)
-	if action == "stop" {
+	if lifecycleErr != nil || action == "stop" {
 		return lifecycleErr
 	}
-	// Containerlab generic_vm containers are auto-removed when their wrapper is
-	// stopped. A successful start/restart can therefore leave no container.
-	// Full deploy is convergent and recreates only the missing node and links.
-	deployErr := c.Deploy(ctx, topology)
-	if deployErr != nil && lifecycleErr != nil {
-		return errors.Join(lifecycleErr, deployErr)
-	}
-	return deployErr
+	// Do not turn a native start/restart into a whole-lab deployment. Missing
+	// containers or links require an explicitly reviewed Plan/Apply operation.
+	return c.restoreAttachments(ctx, topology, node)
 }
 
-// Replace removes one node, then lets Containerlab's convergent full deploy restore that node and
-// all of its links without perturbing healthy nodes.
-func (c *Containerlab) Replace(ctx context.Context, topology, node string) error {
+func (c *Containerlab) RestoreAttachments(ctx context.Context, topology, node string) error {
+	return c.restoreAttachments(ctx, topology, node)
+}
+
+// RemoveNode removes only the selected runtime node. Recreating it and its
+// links requires an explicitly approved native Plan/Apply operation.
+func (c *Containerlab) RemoveNode(ctx context.Context, topology, node string) error {
+	if err := c.saveAttachments(ctx, topology, node); err != nil {
+		return err
+	}
 	if _, err := c.run(ctx, nil, "destroy", "--topo", topology, "--node-filter", node); err != nil {
 		return err
 	}
-	return c.Deploy(ctx, topology)
+	// Do not authorize disk reset based on command exit status alone. Include
+	// stopped containers: they may still hold the same writable disk mounts.
+	remaining, err := checked(ctx, c.Runner, nil, "docker", "ps", "-aq",
+		"--filter", "label=clab-topo-file="+topology,
+		"--filter", "label=clab-node-name="+node)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(remaining.Stdout)) != "" {
+		return fmt.Errorf("node %q still has a runtime container after removal; disks must not be reset", node)
+	}
+	return nil
 }
 
 func (c *Containerlab) Exec(ctx context.Context, lab, node, control string, timeout time.Duration, stdin []byte, argv []string) (Result, error) {
 	if len(argv) == 0 {
 		return Result{}, errors.New("argv is empty")
 	}
-	container := "clab-" + lab + "-" + node
+	if timeout > 0 {
+		// Bound host-side container lookup and Docker exec too, not only the
+		// guest process. QGA gets a small, bounded cleanup allowance.
+		budget := timeout
+		if control == "qga" {
+			budget += 10 * time.Second
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
+	container, err := c.containerID(ctx, lab, node)
+	if err != nil {
+		return Result{}, err
+	}
 	args := []string{"docker", "exec"}
 	if stdin != nil {
 		args = append(args, "-i")
@@ -201,7 +259,10 @@ func (c *Containerlab) Exec(ctx context.Context, lab, node, control string, time
 
 func (c *Containerlab) Put(ctx context.Context, lab, node, control, path string, mode uint32, content []byte) error {
 	if control == "qga" {
-		container := "clab-" + lab + "-" + node
+		container, err := c.containerID(ctx, lab, node)
+		if err != nil {
+			return err
+		}
 		r, err := c.Runner.Run(ctx, bytes.NewReader(content), "docker", "exec", "-i", container,
 			"/labcontainers-guest", "put", "10m", strconv.FormatUint(uint64(mode), 8), path)
 		if err != nil {
@@ -229,12 +290,36 @@ func (c *Containerlab) Put(ctx context.Context, lab, node, control, path string,
 	return nil
 }
 
-func (c *Containerlab) SetLink(ctx context.Context, lab, node, control, iface string, up bool) error {
+// LinkUp observes the administrative state of the native topology endpoint,
+// including a VM wrapper endpoint. Carrier/operstate is not administrative UP.
+func (c *Containerlab) LinkUp(ctx context.Context, lab, node, _ string, iface string) (bool, error) {
+	if iface == "" || iface == "." || iface == ".." || strings.ContainsAny(iface, "/\x00") {
+		return false, fmt.Errorf("invalid native interface name %q", iface)
+	}
+	argv := []string{"cat", "/sys/class/net/" + iface + "/flags"}
+	r, err := c.Exec(ctx, lab, node, "container", 30*time.Second, nil, argv)
+	if err != nil {
+		return false, err
+	}
+	if r.ExitCode != 0 {
+		return false, &CommandError{Argv: argv, Result: r}
+	}
+	flags, err := strconv.ParseUint(strings.TrimSpace(string(r.Stdout)), 0, 32)
+	if err != nil {
+		return false, fmt.Errorf("read native link state: %w", err)
+	}
+	return flags&1 != 0, nil // Linux IFF_UP; not carrier state (IFF_RUNNING).
+}
+
+func (c *Containerlab) SetLink(ctx context.Context, lab, node, _ string, iface string, up bool) error {
 	state := "down"
 	if up {
 		state = "up"
 	}
-	r, err := c.Exec(ctx, lab, node, control, 30*time.Second, nil, []string{"ip", "link", "set", iface, state})
+	// The name belongs to the native topology's endpoint, not to the guest OS.
+	// A VM's guest might name the device ens2 or Ethernet; cutting the wrapper
+	// endpoint works across OSes and leaves serial QGA control available.
+	r, err := c.Exec(ctx, lab, node, "container", 30*time.Second, nil, []string{"ip", "link", "set", iface, state})
 	if err != nil {
 		return err
 	}

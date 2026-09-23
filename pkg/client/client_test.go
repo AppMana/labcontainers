@@ -1,9 +1,29 @@
 package client
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestCleanupRetainsNonemptyOrUnreadableState(t *testing.T) {
+	root := t.TempDir()
+	if !retainState(root) || !retainState("") {
+		t.Fatal("uncertain state considered disposable")
+	}
+	if err := os.Mkdir(filepath.Join(root, "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if retainState(root) {
+		t.Fatal("empty state retained")
+	}
+	if err := os.Mkdir(filepath.Join(root, "sessions", "kept"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !retainState(root) {
+		t.Fatal("kept state considered disposable")
+	}
+}
 
 func TestLaunchStateDir(t *testing.T) {
 	t.Parallel()
