@@ -129,6 +129,9 @@ func (a *Agent) Call(ctx context.Context, command string, args, into any) (err e
 		return ctx.Err()
 	}
 	defer func() {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		if err != nil && a.conn != nil {
 			_ = a.conn.Close()
 			a.conn = nil
@@ -149,7 +152,8 @@ func (a *Agent) Call(ctx context.Context, command string, args, into any) (err e
 	// Stop the callback before releasing the gate to the next request.
 	conn := a.conn
 	interrupted := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()); close(interrupted) })
+	// Closing cannot be undone by a concurrent SetDeadline below.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close(); close(interrupted) })
 	defer func() {
 		if !stop() {
 			<-interrupted
