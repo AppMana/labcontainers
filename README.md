@@ -117,11 +117,13 @@ enable implicit networks or disable runtime checks on the other isolated nodes.
 Runtime Docker checks alone do not certify guest NICs or application reachability;
 network-sensitive tests must also cut their declared paths and probe from guests.
 
-Install the daemon and diagnostic CLI once for all language SDKs:
+Install the daemon and diagnostic CLI once for all language SDKs. The examples
+below pin the daemon and clients to the same tested revision; do not mix these
+clients with the older `v0.2.0-alpha.2` daemon.
 
 ```sh
-go install github.com/appmana/labcontainers/cmd/labd@v0.2.0-alpha.2
-go install github.com/appmana/labcontainers/cmd/labctl@v0.2.0-alpha.2
+go install github.com/appmana/labcontainers/cmd/labd@3d724ee9d030731e30c11aef5b6d188ca2f40849
+go install github.com/appmana/labcontainers/cmd/labctl@3d724ee9d030731e30c11aef5b6d188ca2f40849
 ```
 
 `labd` must be on `PATH`, or its path can be passed as Go's `LabdPath`,
@@ -436,11 +438,10 @@ closed schema objects reject unknown fields.
 Generated models are not a replacement for Containerlab's own validation;
 kind-specific conditional constraints are still validated during deployment.
 
-Python can be installed directly from a Git checkout (select the branch/commit
-containing the bindings when testing unreleased changes):
+Python can be installed directly from Git at the same revision as the daemon:
 
 ```sh
-python -m pip install 'git+https://github.com/AppMana/labcontainers.git@<commit>'
+python -m pip install 'git+https://github.com/AppMana/labcontainers.git@3d724ee9d030731e30c11aef5b6d188ca2f40849'
 ```
 
 ## Node.js
@@ -467,7 +468,7 @@ try {
 The npm package is also Git-installable without a publish step:
 
 ```sh
-npm install 'git+https://github.com/AppMana/labcontainers.git#v0.2.0-alpha.2'
+npm install 'git+https://github.com/AppMana/labcontainers.git#3d724ee9d030731e30c11aef5b6d188ca2f40849'
 ```
 
 Use `session.keep()` only for debugging. It returns a resume token in the raw
