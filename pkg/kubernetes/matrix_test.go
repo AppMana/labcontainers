@@ -64,3 +64,16 @@ func TestWindowsBGPRequiresEveryPinnedInput(t *testing.T) {
 		}
 	}
 }
+
+func TestArtifactPinVersionLabels(t *testing.T) {
+	for _, version := range []string{"latest", "stable", "main", "nightly", "1.36.*", "release"} {
+		if (ArtifactPin{Version: version, SHA256: digest}).validate("test") == nil {
+			t.Fatalf("accepted floating or non-version label %q", version)
+		}
+	}
+	for _, version := range []string{"windows-x64-v3.32.0", "rras-tools-1", "v1.36.2+k0s.0"} {
+		if err := (ArtifactPin{Version: version, SHA256: digest}).validate("test"); err != nil {
+			t.Fatalf("rejected immutable label %q: %v", version, err)
+		}
+	}
+}

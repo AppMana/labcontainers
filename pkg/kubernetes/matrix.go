@@ -23,8 +23,9 @@ const (
 	CNIKubeRouter  CNI = "kuberouter"
 )
 
-// ArtifactPin identifies caller-prepared bytes. Version is exact, never a
-// channel or minor selector. SHA256 is verified before any VM operation.
+// ArtifactPin identifies caller-prepared bytes. Version is a non-floating
+// provenance label; SHA256 supplies immutable content identity and is verified
+// before any VM operation.
 type ArtifactPin struct{ Version, SHA256 string }
 
 // WindowsBGPCapability identifies fork-specific inputs required to render and
@@ -50,11 +51,14 @@ var (
 	sha256Hex              = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 	k0sArtifactVersion     = regexp.MustCompile(`^v?([0-9]+\.[0-9]+\.[0-9]+)\+k0s\.[0-9]+$`)
 	sourceRevision         = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	versionDigit           = regexp.MustCompile(`[0-9]`)
 )
 
 func (p ArtifactPin) validate(name string) error {
-	if p.Version == "" || strings.ContainsAny(p.Version, "xX*") || !sha256Hex.MatchString(p.SHA256) {
-		return fmt.Errorf("%s requires an exact version and 64-digit SHA256", name)
+	version := strings.TrimSpace(p.Version)
+	floating := map[string]bool{"latest": true, "stable": true, "current": true, "main": true, "master": true, "nightly": true}
+	if version == "" || strings.Contains(version, "*") || floating[strings.ToLower(version)] || !versionDigit.MatchString(version) || !sha256Hex.MatchString(p.SHA256) {
+		return fmt.Errorf("%s requires a non-floating version label containing a digit and a 64-digit SHA256", name)
 	}
 	return nil
 }

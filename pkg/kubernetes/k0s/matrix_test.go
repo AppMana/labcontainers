@@ -1,7 +1,9 @@
 package k0s
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	matrix "github.com/appmana/labcontainers/pkg/kubernetes"
@@ -57,10 +59,14 @@ func TestConfigureNetworkRejectsBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestGenericNativeConfigStillRequiresNoSpecialization(t *testing.T) {
+func TestWriteConfigWithoutSpecializationPreservesCustomProvider(t *testing.T) {
 	cfg := &native.ClusterConfig{Spec: &native.ClusterSpec{Network: &native.Network{Provider: "custom"}}}
-	before := cfg.DeepCopy()
-	if !reflect.DeepEqual(cfg, before) {
-		t.Fatal("generic native config changed without ConfigureNetwork")
+	n := &node{}
+	if err := WriteConfig(context.Background(), n, "/etc/k0s/generic.yaml", cfg); err != nil {
+		t.Fatal(err)
+	}
+	wire := string(n.data)
+	if !strings.Contains(wire, "provider: custom") || strings.Contains(wire, "provider: calico") || strings.Contains(wire, "provider: kuberouter") {
+		t.Fatalf("serialization implicitly specialized generic config: %s", wire)
 	}
 }
