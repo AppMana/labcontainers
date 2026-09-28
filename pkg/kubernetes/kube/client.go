@@ -1,5 +1,5 @@
-// Package kube talks to the cluster the way an operator would: from
-// the bastion, which is on the site network.
+// Package kube talks to the cluster through caller-supplied guest Commands:
+// usually the bastion, or a distribution's kubectl on a controller guest.
 //
 // Not from this host. This host has no address on the site and no
 // route to it, and it must stay that way — the property the whole lab
@@ -7,7 +7,7 @@
 // the API server directly would be proving something weaker than it
 // claims.
 //
-// The bastion is not a cluster node: nothing serves its loopback and
+// The default bastion is not a cluster node: nothing serves its loopback and
 // it runs no forwarder, so every call picks a live control plane
 // first. That was a shell script written into the container; here it
 // is a decision this package makes, with the reasoning attached and a
@@ -18,23 +18,39 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
 
 	"github.com/appmana/labcontainers/pkg/rig"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// Client runs kubectl on the bastion against whichever control plane
+// Client runs kubectl through guest Commands against whichever control plane
 // is currently able to answer.
 type Client struct {
 	Bastion rig.Commands
+	// Kubectl is an argv prefix executed by Bastion, never a shell command
+	// or host-side process. Empty preserves ["kubectl"]. A controller guest
+	// can use ["/usr/local/bin/k0s", "kubectl"] with its own credentials.
+	Kubectl []string
 	// ControlPlanes are the real addresses of the members, which are
 	// in every server certificate's SANs, so naming one needs no other
 	// accommodation.
 	ControlPlanes []string
 	// APIPort is the distribution's serving port; zero retains 6443.
 	APIPort int
+}
+
+func (c *Client) kubectlArgs(args ...string) []string {
+	prefix := c.Kubectl
+	if len(prefix) == 0 {
+		prefix = []string{"kubectl"}
+	}
+	command := make([]string, 0, len(prefix)+len(args))
+	command = append(command, prefix...)
+	return append(command, args...)
 }
 
 // ServingPort is shared by API access and the infrastructure endpoint contract.
@@ -63,8 +79,8 @@ func (c *Client) Server(ctx context.Context) (string, error) {
 	port := c.ServingPort()
 	for _, addr := range c.ControlPlanes {
 		server := "https://" + net.JoinHostPort(addr, strconv.Itoa(port))
-		_, err := c.Bastion.Exec(ctx, "kubectl", "--server="+server,
-			"--request-timeout=2s", "get", "--raw", "/readyz")
+		_, err := c.Bastion.Exec(ctx, c.kubectlArgs("--server="+server,
+			"--request-timeout=2s", "get", "--raw", "/readyz")...)
 		if err == nil {
 			return server, nil
 		}
@@ -78,7 +94,35 @@ func (c *Client) Run(ctx context.Context, args ...string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.Bastion.Exec(ctx, append([]string{"kubectl", "--server=" + server}, args...)...)
+	return c.Bastion.Exec(ctx, c.kubectlArgs(append([]string{"--server=" + server}, args...)...)...)
+}
+
+// ExecPod runs argv in one explicitly named pod/container. Stdin is attached
+// only when supplied; no TTY, shell quoting, implicit namespace/container, or
+// command retry is introduced. Output and the rig command error (including
+// ExitError's code/stderr) pass through unchanged after an authenticated readyz.
+func (c *Client) ExecPod(ctx context.Context, namespace, pod, container string, stdin io.Reader, argv ...string) ([]byte, error) {
+	if len(validation.IsDNS1123Label(namespace)) != 0 || len(validation.IsDNS1123Subdomain(pod)) != 0 || len(validation.IsDNS1123Label(container)) != 0 {
+		return nil, fmt.Errorf("pod exec requires explicit valid namespace, pod, and container names")
+	}
+	if len(argv) == 0 || argv[0] == "" {
+		return nil, fmt.Errorf("pod exec requires a command argv")
+	}
+	server, err := c.Server(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"--server=" + server, "exec", "--namespace=" + namespace, pod, "--container=" + container}
+	if stdin != nil {
+		args = append(args, "-i")
+	}
+	args = append(args, "--")
+	args = append(args, argv...)
+	command := c.kubectlArgs(args...)
+	if stdin != nil {
+		return c.Bastion.Pipe(ctx, stdin, command...)
+	}
+	return c.Bastion.Exec(ctx, command...)
 }
 
 // Apply sends a manifest through stdin.
@@ -91,7 +135,7 @@ func (c *Client) Apply(ctx context.Context, manifest []byte) error {
 		return err
 	}
 	out, err := c.Bastion.Pipe(ctx, bytes.NewReader(manifest),
-		"kubectl", "--server="+server, "apply", "-f", "-")
+		c.kubectlArgs("--server="+server, "apply", "-f", "-")...)
 	if err != nil {
 		return fmt.Errorf("applying: %w: %s", err, out)
 	}
