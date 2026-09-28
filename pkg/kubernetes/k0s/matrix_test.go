@@ -59,6 +59,30 @@ func TestConfigureNetworkRejectsBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestConfigureNetworkAttestedWindowsBGPFork(t *testing.T) {
+	const revision = "2a2a0880d35d8dfc5eb7eab58509da4611280648"
+	s := matrixSelection(matrix.CNICalicoBGP, true)
+	s.DistributionBinary = matrix.ArtifactPin{Version: "v1.36.2+k0s.0.appmana.2a2a088", SHA256: matrixDigest, SourceRevision: revision}
+	s.WindowsBGP = &matrix.WindowsBGPCapability{GeneratorSourceRevision: revision,
+		RRASTooling:        matrix.ArtifactPin{Version: "rras-1", SHA256: matrixDigest},
+		CalicoWindowsImage: matrix.ArtifactPin{Version: "v3.32.0-fork.1", SHA256: matrixDigest}}
+	cfg := &native.ClusterConfig{Spec: &native.ClusterSpec{Network: &native.Network{Provider: "custom"}}}
+	if err := ConfigureNetwork(cfg, s); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Spec.Network.Provider != "calico" || cfg.Spec.Network.Calico.Mode != native.CalicoModeBIRD || cfg.Spec.Network.Calico.Overlay != "Never" {
+		t.Fatalf("fork selection lost native BGP fields: %+v", cfg.Spec.Network)
+	}
+	before := cfg.DeepCopy()
+	s.WindowsBGP.GeneratorSourceRevision = strings.Repeat("a", 40)
+	if err := ConfigureNetwork(cfg, s); err == nil {
+		t.Fatal("accepted unrelated generator provenance")
+	}
+	if !reflect.DeepEqual(cfg, before) {
+		t.Fatal("rejected fork mutated config")
+	}
+}
+
 func TestWriteConfigWithoutSpecializationPreservesCustomProvider(t *testing.T) {
 	cfg := &native.ClusterConfig{Spec: &native.ClusterSpec{Network: &native.Network{Provider: "custom"}}}
 	n := &node{}

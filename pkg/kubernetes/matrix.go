@@ -26,7 +26,13 @@ const (
 // ArtifactPin identifies caller-prepared bytes. Version is a non-floating
 // provenance label; SHA256 supplies immutable content identity and is verified
 // before any VM operation.
-type ArtifactPin struct{ Version, SHA256 string }
+type ArtifactPin struct {
+	Version, SHA256 string
+	// SourceRevision is the full lowercase Git commit of caller-built inputs.
+	// It is required for explicitly labeled AppMana k0s forks; a binary hash
+	// remains mandatory and is not replaced by source provenance.
+	SourceRevision string
+}
 
 // WindowsBGPCapability identifies fork-specific inputs required to render and
 // run Calico's unencapsulated Windows L2Bridge/BGP path. Stock k0s emits its
@@ -49,7 +55,7 @@ type Selection struct {
 var (
 	exactKubernetesVersion = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`)
 	sha256Hex              = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-	k0sArtifactVersion     = regexp.MustCompile(`^v?([0-9]+\.[0-9]+\.[0-9]+)\+k0s\.[0-9]+$`)
+	k0sArtifactVersion     = regexp.MustCompile(`^v?([0-9]+\.[0-9]+\.[0-9]+)\+k0s\.[0-9]+(?:\.appmana\.([0-9a-f]{7,40}))?$`)
 	sourceRevision         = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	versionDigit           = regexp.MustCompile(`[0-9]`)
 )
@@ -59,6 +65,9 @@ func (p ArtifactPin) validate(name string) error {
 	floating := map[string]bool{"latest": true, "stable": true, "current": true, "main": true, "master": true, "nightly": true}
 	if version == "" || strings.Contains(version, "*") || floating[strings.ToLower(version)] || !versionDigit.MatchString(version) || !sha256Hex.MatchString(p.SHA256) {
 		return fmt.Errorf("%s requires a non-floating version label containing a digit and a 64-digit SHA256", name)
+	}
+	if p.SourceRevision != "" && !sourceRevision.MatchString(p.SourceRevision) {
+		return fmt.Errorf("%s source revision must be a full 40-digit lowercase Git commit", name)
 	}
 	return nil
 }
@@ -76,8 +85,12 @@ func (s Selection) Validate() error {
 	switch s.Distribution {
 	case DistributionK0s:
 		match := k0sArtifactVersion.FindStringSubmatch(s.DistributionBinary.Version)
-		if len(match) != 2 || strings.TrimPrefix(s.KubernetesVersion, "v") != match[1] {
+		if len(match) != 3 || strings.TrimPrefix(s.KubernetesVersion, "v") != match[1] {
 			return fmt.Errorf("k0s artifact version %q does not identify Kubernetes %q", s.DistributionBinary.Version, s.KubernetesVersion)
+		}
+		if match[2] != "" && (!sourceRevision.MatchString(s.DistributionBinary.SourceRevision) ||
+			!strings.HasPrefix(s.DistributionBinary.SourceRevision, match[2])) {
+			return fmt.Errorf("AppMana k0s fork version suffix must match its full artifact source revision")
 		}
 	case DistributionRKE2:
 		return fmt.Errorf("RKE2 specialization matrix is not implemented; use the explicit native rke2 package")
@@ -105,6 +118,9 @@ func (s Selection) Validate() error {
 		}
 		if s.WindowsBGP == nil || !sourceRevision.MatchString(s.WindowsBGP.GeneratorSourceRevision) {
 			return fmt.Errorf("k0s Windows Calico BGP requires a 40-digit source revision for a generator that emits the Windows BGP DaemonSet")
+		}
+		if s.DistributionBinary.SourceRevision != "" && s.WindowsBGP.GeneratorSourceRevision != s.DistributionBinary.SourceRevision {
+			return fmt.Errorf("Windows BGP generator source revision must match the distribution artifact source revision")
 		}
 		if err := s.WindowsBGP.RRASTooling.validate("Windows RRAS tooling"); err != nil {
 			return err
