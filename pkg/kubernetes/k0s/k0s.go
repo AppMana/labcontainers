@@ -8,10 +8,48 @@ import (
 	"fmt"
 	"path"
 
+	matrix "github.com/appmana/labcontainers/pkg/kubernetes"
 	"github.com/appmana/labcontainers/pkg/rig"
 	native "github.com/k0sproject/k0s/pkg/apis/k0s/v1beta1"
 	"sigs.k8s.io/yaml"
 )
+
+// ConfigureNetwork applies a validated specialization to k0s's upstream native
+// object. It does not apply defaults, serialize YAML, select an artifact, or
+// touch a node. VM qualification remains the caller's responsibility.
+func ConfigureNetwork(config *native.ClusterConfig, selection matrix.Selection) error {
+	if err := selection.Validate(); err != nil {
+		return err
+	}
+	if selection.Distribution != matrix.DistributionK0s {
+		return fmt.Errorf("k0s configuration requires the k0s distribution")
+	}
+	if config == nil || config.Spec == nil || config.Spec.Network == nil {
+		return fmt.Errorf("native k0s spec.network is required")
+	}
+	network := config.Spec.Network
+	switch selection.CNI {
+	case matrix.CNIKubeRouter:
+		network.Provider = "kuberouter"
+		network.Calico = nil
+	case matrix.CNICalicoVXLAN, matrix.CNICalicoBGP:
+		network.Provider = "calico"
+		network.KubeRouter = nil
+		if network.Calico == nil {
+			network.Calico = &native.Calico{}
+		}
+		if selection.CNI == matrix.CNICalicoVXLAN {
+			network.Calico.Mode = native.CalicoModeVXLAN
+			network.Calico.Overlay = "Always"
+		} else {
+			network.Calico.Mode = native.CalicoModeBIRD
+			network.Calico.Overlay = "Never"
+		}
+	default:
+		return fmt.Errorf("unsupported CNI %q", selection.CNI)
+	}
+	return nil
+}
 
 // WriteConfig writes the caller's upstream object without invoking k0s's
 // default constructors or changing it. The path is explicit, as is the
