@@ -25,6 +25,9 @@ type Containerlab struct {
 	Runner Runner
 	Binary string
 	Sudo   bool
+	// EndpointHelper is the matching labd executable used for privileged native
+	// endpoint parking. Empty selects the current daemon executable.
+	EndpointHelper string
 }
 
 type Inspection struct {

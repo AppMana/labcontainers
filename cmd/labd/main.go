@@ -20,6 +20,15 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "park-endpoints" || os.Args[1] == "restore-endpoints") {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := engine.RunEndpointHelper(ctx, os.Args[1], os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "labd endpoints:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	var socket, stateDir string
 	var parentPID int
 	flag.StringVar(&socket, "socket", "", "private Unix socket path")
