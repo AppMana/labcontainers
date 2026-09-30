@@ -28,13 +28,14 @@ type Options struct {
 }
 
 type Client struct {
-	conn     *grpc.ClientConn
-	rpc      labv1.LabcontainersClient
-	cmd      *exec.Cmd
-	tempDir  string
-	stateDir string
-	mu       sync.Mutex
-	sessions map[string]string
+	conn      *grpc.ClientConn
+	rpc       labv1.LabcontainersClient
+	cmd       *exec.Cmd
+	tempDir   string
+	stateDir  string
+	daemonLog string
+	mu        sync.Mutex
+	sessions  map[string]string
 }
 
 // RPC exposes the generated transport client without narrowing its request
@@ -63,7 +64,18 @@ func Launch(ctx context.Context, opts Options) (*Client, error) {
 		args = append(args, "--state-dir", opts.StateDir)
 	}
 	cmd := exec.CommandContext(context.Background(), labd, args...)
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	// A kept daemon outlives its launching test. Inheriting stderr would also
+	// keep go test's output pipe open after the test exits (exec.ErrWaitDelay).
+	// Give the daemon a real file, not a forwarding goroutine or parent pipe.
+	logFile, err := os.OpenFile(opts.Socket+".log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		if tempDir != "" {
+			_ = os.RemoveAll(tempDir)
+		}
+		return nil, fmt.Errorf("open labd log: %w", err)
+	}
+	defer logFile.Close()
+	cmd.Stdout, cmd.Stderr = logFile, logFile
 	if err := cmd.Start(); err != nil {
 		if tempDir != "" {
 			_ = os.RemoveAll(tempDir)
@@ -79,6 +91,7 @@ func Launch(ctx context.Context, opts Options) (*Client, error) {
 		return nil, err
 	}
 	c.cmd, c.tempDir, c.stateDir = cmd, tempDir, opts.StateDir
+	c.daemonLog = logFile.Name()
 	return c, nil
 }
 
@@ -203,6 +216,11 @@ func (c *Client) Socket() string { return strings.TrimPrefix(c.conn.Target(), "u
 // StateDirectory is the child daemon's configured state root. It can be reused
 // in Options after an explicit daemon stop; kept files must not be relocated.
 func (c *Client) StateDirectory() string { return c.stateDir }
+
+// DaemonLogPath returns the launched daemon's stdout/stderr file. Dial-only
+// clients return an empty path. It survives Close when runtime state is kept;
+// otherwise a default temporary socket directory is removed during cleanup.
+func (c *Client) DaemonLogPath() string { return c.daemonLog }
 
 type Session struct {
 	client *Client
