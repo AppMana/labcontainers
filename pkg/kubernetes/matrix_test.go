@@ -1,9 +1,80 @@
 package kubernetes
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestDeclarativeWindowsBGPRequiresPinsAndVerifiedBytes(t *testing.T) {
+	data := []byte(`{"apiVersion":"v1","kind":"List","items":[]}`)
+	newSelection := func() Selection {
+		s := baseSelection()
+		s.CNI, s.WindowsWorkers = CNICalicoBGP, true
+		s.WindowsBGP = &WindowsBGPCapability{
+			DeclarativeManifests: &ArtifactPin{Version: "bgp-1", SHA256: fmt.Sprintf("%x", sha256.Sum256(data)), SourceRevision: strings.Repeat("b", 40)},
+			RRASTooling:          ArtifactPin{Version: "rras-1", SHA256: digest},
+			CalicoWindowsImage:   ArtifactPin{Version: "v3.32.2", SHA256: digest},
+		}
+		return s
+	}
+	for _, mutate := range []func(*Selection){
+		func(s *Selection) { s.WindowsBGP.GeneratorSourceRevision = strings.Repeat("a", 40) },
+		func(s *Selection) { s.WindowsBGP.DeclarativeManifests.SHA256 = "" },
+		func(s *Selection) { s.WindowsBGP.DeclarativeManifests.SourceRevision = "" },
+		func(s *Selection) { s.WindowsBGP.DeclarativeManifests.Version = "latest" },
+		func(s *Selection) { s.WindowsBGP.RRASTooling.SHA256 = "" },
+		func(s *Selection) { s.WindowsBGP.CalicoWindowsImage.SHA256 = "" },
+		func(s *Selection) { s.WindowsWorkers = false },
+		func(s *Selection) { s.CNI = CNICalicoVXLAN },
+	} {
+		s := newSelection()
+		mutate(&s)
+		if s.Validate() == nil {
+			t.Fatal("accepted incomplete or ambiguous manifest capability")
+		}
+	}
+	s := newSelection()
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WindowsBGP.VerifyDeclarativeManifests(data); err != nil {
+		t.Fatal(err)
+	}
+	for _, wrong := range [][]byte{nil, []byte("{}"), append(append([]byte(nil), data...), '\n')} {
+		if s.WindowsBGP.VerifyDeclarativeManifests(wrong) == nil {
+			t.Fatal("accepted altered manifest bytes")
+		}
+	}
+	s.WindowsBGP.GeneratorSourceRevision = strings.Repeat("a", 40)
+	if s.WindowsBGP.VerifyDeclarativeManifests(data) == nil {
+		t.Fatal("accepted two owners")
+	}
+	s.WindowsBGP.DeclarativeManifests = nil
+	if s.WindowsBGP.VerifyDeclarativeManifests(data) == nil {
+		t.Fatal("accepted missing manifest pin")
+	}
+}
+
+func TestStockK0sWindowsBGPDeclarativeManifests(t *testing.T) {
+	// Use the serialized public API to reproduce rejection before adding the
+	// capability. The manifests belong to the caller, not the k0s executable.
+	wire := `{"Distribution":"k0s","KubernetesVersion":"1.36.4",
+	"DistributionBinary":{"Version":"v1.36.4+k0s.1","SHA256":"` + digest + `","SourceRevision":"` + strings.Repeat("a", 40) + `"},
+	"CNI":"calico-bgp","WindowsWorkers":true,"WindowsBGP":{
+	"DeclarativeManifests":{"Version":"calico-bgp-3.32.2","SHA256":"` + digest + `","SourceRevision":"` + strings.Repeat("b", 40) + `"},
+	"RRASTooling":{"Version":"rras-1","SHA256":"` + digest + `"},
+	"CalicoWindowsImage":{"Version":"v3.32.2-post.2","SHA256":"` + digest + `"}}}`
+	var selection Selection
+	if err := json.Unmarshal([]byte(wire), &selection); err != nil {
+		t.Fatal(err)
+	}
+	if err := selection.Validate(); err != nil {
+		t.Fatalf("stock distribution with independently pinned manifests: %v", err)
+	}
+}
 
 const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 

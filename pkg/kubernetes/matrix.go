@@ -3,6 +3,7 @@
 package kubernetes
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"strings"
@@ -34,15 +35,39 @@ type ArtifactPin struct {
 	SourceRevision string
 }
 
-// WindowsBGPCapability identifies fork-specific inputs required to render and
-// run Calico's unencapsulated Windows L2Bridge/BGP path. Stock k0s emits its
-// Windows DaemonSet only for VXLAN. This remains a qualification candidate,
-// not evidence that a VM gate passed.
+// WindowsBGPCapability identifies explicit inputs for Windows L2Bridge/BGP.
+// Stock k0s emits its Windows DaemonSet only for VXLAN; callers must select
+// either a patched distribution generator or independently owned manifests.
+// This describes capability, not evidence that a VM gate passed.
 type WindowsBGPCapability struct {
 	GeneratorSourceRevision string
-	RRASTooling             ArtifactPin
-	CalicoWindowsImage      ArtifactPin
+	// DeclarativeManifests pins the serialized native Kubernetes objects that
+	// the caller owns (for example through GitOps). It is mutually exclusive
+	// with GeneratorSourceRevision. The caller must verify these bytes before
+	// applying them and establish readiness; ConfigureNetwork does neither.
+	DeclarativeManifests *ArtifactPin
+	RRASTooling          ArtifactPin
+	CalicoWindowsImage   ArtifactPin
 }
+
+// VerifyDeclarativeManifests verifies prepared manifest bytes without applying
+// resources, opening a network, or treating a matching hash as readiness.
+func (c WindowsBGPCapability) VerifyDeclarativeManifests(data []byte) error {
+	if c.DeclarativeManifests == nil || c.GeneratorSourceRevision != "" {
+		return fmt.Errorf("select only declarative Windows BGP manifests")
+	}
+	if err := c.DeclarativeManifests.validate("Windows BGP declarative manifests"); err != nil {
+		return err
+	}
+	if !sourceRevision.MatchString(c.DeclarativeManifests.SourceRevision) {
+		return fmt.Errorf("Windows BGP declarative manifests require a full source revision")
+	}
+	if len(data) == 0 || !strings.EqualFold(fmt.Sprintf("%x", sha256.Sum256(data)), c.DeclarativeManifests.SHA256) {
+		return fmt.Errorf("Windows BGP declarative manifest checksum mismatch")
+	}
+	return nil
+}
+
 type Selection struct {
 	Distribution       Distribution
 	KubernetesVersion  string
@@ -116,11 +141,26 @@ func (s Selection) Validate() error {
 			}
 			break
 		}
-		if s.WindowsBGP == nil || !sourceRevision.MatchString(s.WindowsBGP.GeneratorSourceRevision) {
+		if s.WindowsBGP == nil {
 			return fmt.Errorf("k0s Windows Calico BGP requires a 40-digit source revision for a generator that emits the Windows BGP DaemonSet")
 		}
-		if s.DistributionBinary.SourceRevision != "" && s.WindowsBGP.GeneratorSourceRevision != s.DistributionBinary.SourceRevision {
-			return fmt.Errorf("Windows BGP generator source revision must match the distribution artifact source revision")
+		if manifests := s.WindowsBGP.DeclarativeManifests; manifests != nil {
+			if s.WindowsBGP.GeneratorSourceRevision != "" {
+				return fmt.Errorf("select either a Windows BGP distribution generator or declarative manifests, not both")
+			}
+			if err := manifests.validate("Windows BGP declarative manifests"); err != nil {
+				return err
+			}
+			if !sourceRevision.MatchString(manifests.SourceRevision) {
+				return fmt.Errorf("Windows BGP declarative manifests require a full source revision")
+			}
+		} else {
+			if !sourceRevision.MatchString(s.WindowsBGP.GeneratorSourceRevision) {
+				return fmt.Errorf("Windows BGP generator requires a full source revision")
+			}
+			if s.DistributionBinary.SourceRevision != "" && s.WindowsBGP.GeneratorSourceRevision != s.DistributionBinary.SourceRevision {
+				return fmt.Errorf("Windows BGP generator source revision must match the distribution artifact source revision")
+			}
 		}
 		if err := s.WindowsBGP.RRASTooling.validate("Windows RRAS tooling"); err != nil {
 			return err

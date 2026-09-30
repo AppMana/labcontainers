@@ -83,6 +83,32 @@ func TestConfigureNetworkAttestedWindowsBGPFork(t *testing.T) {
 	}
 }
 
+func TestConfigureNetworkStockK0sWithOwnedWindowsBGPManifests(t *testing.T) {
+	s := matrixSelection(matrix.CNICalicoBGP, true)
+	s.KubernetesVersion = "1.36.4"
+	s.DistributionBinary = matrix.ArtifactPin{Version: "v1.36.4+k0s.1", SHA256: matrixDigest, SourceRevision: strings.Repeat("a", 40)}
+	s.WindowsBGP = &matrix.WindowsBGPCapability{
+		DeclarativeManifests: &matrix.ArtifactPin{Version: "bgp-3.32.2", SHA256: matrixDigest, SourceRevision: strings.Repeat("b", 40)},
+		RRASTooling:          matrix.ArtifactPin{Version: "rras-1", SHA256: matrixDigest},
+		CalicoWindowsImage:   matrix.ArtifactPin{Version: "v3.32.2", SHA256: matrixDigest},
+	}
+	cfg := &native.ClusterConfig{Spec: &native.ClusterSpec{Network: &native.Network{}}}
+	if err := ConfigureNetwork(cfg, s); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Spec.Network.Calico.Mode != native.CalicoModeBIRD || cfg.Spec.Network.Calico.Overlay != "Never" {
+		t.Fatal("lost native BGP configuration")
+	}
+	before := cfg.DeepCopy()
+	s.WindowsBGP.DeclarativeManifests.SHA256 = ""
+	if err := ConfigureNetwork(cfg, s); err == nil {
+		t.Fatal("accepted unpinned manifests")
+	}
+	if !reflect.DeepEqual(before, cfg) {
+		t.Fatal("invalid manifest capability mutated configuration")
+	}
+}
+
 func TestWriteConfigWithoutSpecializationPreservesCustomProvider(t *testing.T) {
 	cfg := &native.ClusterConfig{Spec: &native.ClusterSpec{Network: &native.Network{Provider: "custom"}}}
 	n := &node{}
