@@ -372,6 +372,10 @@ func (a *Agent) Execute(ctx context.Context, argv []string, input []byte) (resul
 type Server struct{ Agent *Agent }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Path == "/ping" {
+		s.servePing(w, req)
+		return
+	}
 	if req.URL.Path == "/put" {
 		s.servePut(w, req)
 		return
@@ -578,10 +582,26 @@ func Put(ctx context.Context, execSocket string, timeout time.Duration, input io
 
 func Main() {
 	if len(os.Args) < 2 {
-		log.Fatal("labcontainers-guest serve | exec <timeout> <stdin:0|1> <argv...> | put <timeout> <mode> <path>")
+		log.Fatal("labcontainers-guest serve | ping <timeout> | exec <timeout> <stdin:0|1> <argv...> | put <timeout> <mode> <path>")
 	}
 	if os.Args[1] == "serve" {
 		log.Fatal(Serve(ExecSocket, &Agent{}))
+		return
+	}
+	if os.Args[1] == "ping" {
+		if len(os.Args) != 3 {
+			log.Fatal("invalid ping command")
+		}
+		duration, err := time.ParseDuration(os.Args[2])
+		if err != nil || duration <= 0 || duration > time.Minute {
+			log.Fatal("ping timeout must be in (0, 1m]")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), duration)
+		defer cancel()
+		if err := Ping(ctx, ExecSocket, duration); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(125)
+		}
 		return
 	}
 	if os.Args[1] == "put" {

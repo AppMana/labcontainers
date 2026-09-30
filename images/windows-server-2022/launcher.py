@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Containerlab generic_vm wrapper for the Labcontainers Windows image."""
 import argparse
-import json
 import logging
 import os
 import re
-import socket
 import subprocess
 import time
 from pathlib import Path
@@ -45,22 +43,19 @@ class WindowsVM(vrnetlab.VM):
 
     def bootstrap_spin(self):
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-                conn.settimeout(2)
-                conn.connect('/run/labcontainers-qga.sock')
-                token = int(time.time_ns() & ((1 << 52) - 1))
-                request = {'execute': 'guest-sync-delimited', 'arguments': {'id': token}}
-                conn.sendall(b'\xff' + json.dumps(request).encode() + b'\n')
-                data = conn.recv(65536)
-                if str(token).encode() not in data:
-                    return
-                conn.sendall(b'{"execute":"guest-ping"}\n')
-                if b'"return"' not in conn.recv(65536):
-                    return
-            self.running = True
-            self.logger.info('Windows QEMU Guest Agent is ready')
-        except (OSError, TimeoutError):
-            time.sleep(1)
+            # Only the helper owns QGA. Its ping serializes with execution;
+            # a second direct socket client competes with its persistent link.
+            result = subprocess.run(
+                ['/labcontainers-guest', 'ping', '2s'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+            )
+            if result.returncode == 0:
+                self.running = True
+                self.logger.info('Windows QEMU Guest Agent is ready')
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        time.sleep(1)
 
 
 class Windows(vrnetlab.VR):
