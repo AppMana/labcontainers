@@ -11,15 +11,34 @@ from unittest.mock import Mock, patch
 
 
 class WindowsLauncherHealthTests(unittest.TestCase):
-    def launcher(self):
+    def launcher(self, base_vm=object):
         path = pathlib.Path(__file__).resolve().parents[2] / "images/windows-server-2022/launcher.py"
         spec = importlib.util.spec_from_file_location("windows_health_test_launcher", path)
         module = importlib.util.module_from_spec(spec)
-        vrnetlab = types.SimpleNamespace(VM=object, VR=object)
+        vrnetlab = types.SimpleNamespace(VM=base_vm, VR=object)
         interfaces = types.SimpleNamespace(declared_nics=Mock(), isolate_control_listeners=Mock(), wait_for_interfaces=Mock())
         with patch.dict(sys.modules, vrnetlab=vrnetlab, interfaces=interfaces):
             spec.loader.exec_module(module)
         return module
+
+    def test_restart_never_uses_an_existing_overlay_as_base(self):
+        class BaseVM:
+            def __init__(self, *args, disk_image, **kwargs):
+                self.disk_image = disk_image
+                self.qemu_args = []
+
+        module = self.launcher(BaseVM)
+        with patch.object(module.os, "listdir", return_value=[
+            "windows-overlay-overlay.qcow2", "windows-overlay.qcow2", "windows.qcow2",
+        ]), patch.object(module.Path, "glob", return_value=[]):
+            vm = module.WindowsVM(0, "tc")
+        self.assertEqual(vm.disk_image, "/windows.qcow2")
+
+    def test_multiple_base_disks_fail_instead_of_selecting_arbitrarily(self):
+        module = self.launcher()
+        with patch.object(module.os, "listdir", return_value=["one.qcow2", "two.qcow2"]):
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                module.WindowsVM(0, "tc")
 
     def test_health_uses_helper_instead_of_competing_for_serial_socket(self):
         module = self.launcher()

@@ -3,7 +3,6 @@
 import argparse
 import logging
 import os
-import re
 import subprocess
 import time
 from pathlib import Path
@@ -14,7 +13,14 @@ from interfaces import declared_nics, isolate_control_listeners, wait_for_interf
 
 class WindowsVM(vrnetlab.VM):
     def __init__(self, nics: int, connection_mode: str):
-        image = next('/' + name for name in os.listdir('/') if re.search(r'\.qcow2$', name))
+        # vrnetlab reuses the base's existing overlay on restart. Selecting an
+        # overlay here creates another overlay and makes disk identity depend
+        # on directory enumeration order after every stop/start.
+        bases = [name for name in os.listdir('/')
+                 if name.endswith('.qcow2') and not name.endswith('-overlay.qcow2')]
+        if len(bases) != 1:
+            raise ValueError(f'expected exactly one base qcow2, found {sorted(bases)}')
+        image = '/' + bases[0]
         super().__init__('Administrator', '', disk_image=image, ram=8192, smp='4')
         isolate_control_listeners(self)
         self.num_nics = nics
