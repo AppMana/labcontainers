@@ -142,6 +142,10 @@ for command in [{'execute':'qmp_capabilities'},{'execute':'query-status'},{'exec
 		if got := guest(`[IO.File]::ReadAllText('C:\restart-canary')`); got != want {
 			t.Fatalf("restart %d lost acknowledged canary: %q", i+1, got)
 		}
+		policy := guest(`& bcdedit.exe /enum '{current}'; if($LASTEXITCODE -ne 0){throw 'Cannot read boot policy'}`)
+		if !strings.Contains(policy, "IgnoreAllFailures") {
+			t.Fatalf("restart %d lost the acknowledged boot policy: %s", i+1, policy)
+		}
 		t.Logf("restart %d: root disk %s and original canary preserved", i+1, before)
 	}
 }
