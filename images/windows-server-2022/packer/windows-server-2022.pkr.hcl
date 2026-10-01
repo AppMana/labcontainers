@@ -107,6 +107,7 @@ build {
   provisioner "powershell" {
     scripts = concat(
       ["${path.root}/scripts/prepare-image.ps1"],
+      ["${path.root}/../../../pkg/windows/unattended_recovery.ps1"],
       var.provisioning_scripts,
       ["${path.root}/scripts/cleanup-image.ps1"],
     )
