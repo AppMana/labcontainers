@@ -15,7 +15,7 @@ import (
 )
 
 // ConfigureNetwork applies a validated specialization to k0s's upstream native
-// object. It does not apply defaults, serialize YAML, select an artifact, or
+// object. It does not apply unrelated defaults, serialize YAML, select an artifact, or
 // touch a node. VM qualification remains the caller's responsibility.
 func ConfigureNetwork(config *native.ClusterConfig, selection matrix.Selection) error {
 	if err := selection.Validate(); err != nil {
@@ -35,6 +35,19 @@ func ConfigureNetwork(config *native.ClusterConfig, selection matrix.Selection) 
 	case matrix.CNICalicoVXLAN, matrix.CNICalicoBGP:
 		network.Provider = "calico"
 		network.KubeRouter = nil
+		// k0s's Calico manifests use calico-ipam, not Kubernetes node CIDRs.
+		// Match the established cluster policy rather than starting a second
+		// allocator (whose /117 default also rejects broad IPv6 pod supernets).
+		// Preserve an explicitly requested allocator policy.
+		if config.Spec.ControllerManager == nil {
+			config.Spec.ControllerManager = &native.ControllerManagerSpec{}
+		}
+		if config.Spec.ControllerManager.ExtraArgs == nil {
+			config.Spec.ControllerManager.ExtraArgs = map[string]string{}
+		}
+		if _, explicit := config.Spec.ControllerManager.ExtraArgs["allocate-node-cidrs"]; !explicit {
+			config.Spec.ControllerManager.ExtraArgs["allocate-node-cidrs"] = "false"
+		}
 		if network.Calico == nil {
 			network.Calico = &native.Calico{}
 		}

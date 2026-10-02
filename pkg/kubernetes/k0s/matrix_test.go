@@ -59,6 +59,53 @@ func TestConfigureNetworkRejectsBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestCalicoUsesItsOwnIPAM(t *testing.T) {
+	for _, cni := range []matrix.CNI{matrix.CNICalicoBGP, matrix.CNICalicoVXLAN} {
+		for _, existing := range []bool{false, true} {
+			cfg := &native.ClusterConfig{Spec: &native.ClusterSpec{Network: &native.Network{
+				DualStack: native.DualStack{Enabled: true, IPv6PodCIDR: "2001:db8:100::/56"},
+			}}}
+			if existing {
+				cfg.Spec.ControllerManager = &native.ControllerManagerSpec{ExtraArgs: map[string]string{"bind-address": "0.0.0.0"}}
+			}
+			if err := ConfigureNetwork(cfg, matrixSelection(cni, false)); err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Spec.ControllerManager == nil || cfg.Spec.ControllerManager.ExtraArgs["allocate-node-cidrs"] != "false" {
+				t.Fatalf("%s: Calico IPAM must not start the unrelated Kubernetes node CIDR allocator", cni)
+			}
+			if existing && cfg.Spec.ControllerManager.ExtraArgs["bind-address"] != "0.0.0.0" {
+				t.Fatal("lost caller's controller-manager arguments")
+			}
+			if cfg.Spec.ControllerManager.ExtraArgs["node-cidr-mask-size-ipv6"] != "" {
+				t.Fatal("introduced an unnecessary Kubernetes allocator mask override")
+			}
+		}
+	}
+}
+
+func TestNetworkSpecializationPreservesExplicitAllocatorPolicy(t *testing.T) {
+	for _, cni := range []matrix.CNI{matrix.CNICalicoBGP, matrix.CNICalicoVXLAN, matrix.CNIKubeRouter} {
+		cfg := &native.ClusterConfig{Spec: &native.ClusterSpec{
+			Network:           &native.Network{},
+			ControllerManager: &native.ControllerManagerSpec{ExtraArgs: map[string]string{"allocate-node-cidrs": "true"}},
+		}}
+		if err := ConfigureNetwork(cfg, matrixSelection(cni, false)); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Spec.ControllerManager.ExtraArgs["allocate-node-cidrs"] != "true" {
+			t.Fatalf("%s: overwrote explicit allocator policy", cni)
+		}
+	}
+	cfg := &native.ClusterConfig{Spec: &native.ClusterSpec{Network: &native.Network{}}}
+	if err := ConfigureNetwork(cfg, matrixSelection(matrix.CNIKubeRouter, false)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Spec.ControllerManager != nil {
+		t.Fatal("Calico IPAM policy leaked into kube-router")
+	}
+}
+
 func TestConfigureNetworkAttestedWindowsBGPFork(t *testing.T) {
 	const revision = "2a2a0880d35d8dfc5eb7eab58509da4611280648"
 	s := matrixSelection(matrix.CNICalicoBGP, true)
