@@ -93,6 +93,10 @@ func TestLiveVyOSRoutedWAN(t *testing.T) {
 	}
 	set := func(path ...string) vyos.Command { return vyos.Command{Operation: "set", Path: path} }
 	commands := []vyos.Command{
+		// Persist native VyOS naming, not just this boot's MAC discovery.
+		set("interfaces", "ethernet", ports[0], "hw-id", "02:00:00:00:00:01"),
+		set("interfaces", "ethernet", ports[1], "hw-id", "02:00:00:00:00:02"),
+		set("interfaces", "ethernet", ports[2], "hw-id", "02:00:00:00:00:03"),
 		set("interfaces", "ethernet", ports[0], "description", "left LAN"),
 		set("interfaces", "ethernet", ports[1], "description", "right LAN"),
 		set("interfaces", "bridge", "br0", "member", "interface", ports[0]),
