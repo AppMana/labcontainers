@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
 	"github.com/appmana/labcontainers/pkg/rig"
@@ -51,6 +52,18 @@ func TestCommandsUsesExistingNativeRPC(t *testing.T) {
 	}
 	if s.put.Path != "/explicit/path" || s.put.Mode != 0o600 || string(s.put.Content) != "file" || s.put.Node.Node != "guest" {
 		t.Fatalf("put changed: %v", s.put)
+	}
+}
+
+func TestCommandsPropagatesExplicitDeadlineToGuest(t *testing.T) {
+	s := &commandRPC{response: &labv1.ExecResponse{}}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+	if _, err := commandsFor(s).Exec(ctx, "ctr", "images", "import", "workload.tar"); err != nil {
+		t.Fatal(err)
+	}
+	if s.exec.TimeoutMillis < (11*time.Minute).Milliseconds() || s.exec.TimeoutMillis > (12*time.Minute).Milliseconds() {
+		t.Fatalf("explicit deadline replaced by daemon default: %d ms", s.exec.TimeoutMillis)
 	}
 }
 

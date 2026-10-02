@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
 	"github.com/appmana/labcontainers/pkg/rig"
@@ -38,7 +39,17 @@ func (n nodeCommands) Pipe(ctx context.Context, src io.Reader, argv ...string) (
 			return nil, err
 		}
 	}
-	response, err := n.node.session.client.rpc.Exec(ctx, &labv1.ExecRequest{Node: n.node.Ref(), Argv: argv, Stdin: stdin})
+	var timeoutMillis int64
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, context.DeadlineExceeded
+		}
+		// Zero means the daemon's default, not an expired/sub-millisecond
+		// budget. Round up while the RPC context enforces the exact deadline.
+		timeoutMillis = int64((remaining + time.Millisecond - 1) / time.Millisecond)
+	}
+	response, err := n.node.session.client.rpc.Exec(ctx, &labv1.ExecRequest{Node: n.node.Ref(), Argv: argv, Stdin: stdin, TimeoutMillis: timeoutMillis})
 	if err != nil {
 		return nil, err
 	}
