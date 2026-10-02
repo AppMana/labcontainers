@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,40 @@ func TestLiveVyOSRoutedWAN(t *testing.T) {
 	}
 	probe("left", "198.18.0.1", true)
 	probe("right", "2001:db8:ffff::1", true)
+	// Saved routing must survive a real boot without reapplying configuration.
+	// QGA starts before VyOS finishes udev renaming and its native config load.
+	boot := run("tor", "cat", "/proc/sys/kernel/random/boot_id")
+	if err := lab.Node("tor").Restart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		attempt, done := context.WithTimeout(ctx, 5*time.Second)
+		current, bootErr := lab.Node("tor").Commands().Exec(attempt, "cat", "/proc/sys/kernel/random/boot_id")
+		done()
+		if bootErr == nil && strings.TrimSpace(string(current)) != "" && string(current) != boot {
+			attempt, done = context.WithTimeout(ctx, 5*time.Second)
+			state, readyErr := lab.Node("tor").Commands().Exec(attempt, "systemctl", "show", "vyos-router.service", "-p", "SubState", "-p", "Result")
+			done()
+			if readyErr == nil && strings.Contains(string(state), "SubState=exited") && strings.Contains(string(state), "Result=success") {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("VyOS did not complete native configuration loading on a new boot")
+		}
+		time.Sleep(time.Second)
+	}
+	after, err := network.InterfaceNames(ctx, lab.Node("tor").Commands(), "02:00:00:00:00:01", "02:00:00:00:00:02", "02:00:00:00:00:03")
+	if err != nil || !reflect.DeepEqual(ports, after) {
+		t.Fatalf("saved router port identity changed: %v -> %v: %v", ports, after, err)
+	}
+	for _, name := range []string{"left", "right"} {
+		probe(name, "198.18.0.1", true)
+		probe(name, "2001:db8:ffff::1", true)
+	}
+	probe("wan", "192.0.2.10", true)
+	probe("wan", "fd00:10::20", true)
 	if output := run("tor", "ip", "-o", "route", "show", "default"); strings.TrimSpace(output) != "" {
 		t.Fatalf("undeclared Internet route: %s", output)
 	}
