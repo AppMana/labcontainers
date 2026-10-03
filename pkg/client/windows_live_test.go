@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +64,11 @@ func TestLiveWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	ps(`$b=[IO.File]::ReadAllBytes('V:\uploaded.bin'); if([Convert]::ToBase64String($b) -ne 'AAoN/4Aq'){throw 'binary upload mismatch'}; $f=[IO.File]::Open('V:\marker',[IO.FileMode]::Create); try{$b=[Text.Encoding]::UTF8.GetBytes('durable-windows'); $f.Write($b,0,$b.Length); $f.Flush($true)}finally{$f.Dispose()}`)
+	// No guest-side read, explicit flush or sleep between this upload and the
+	// crash: the shared Put implementation owns write durability.
+	if err := node.Put(ctx, `V:\upload-before-crash.txt`, 0600, []byte(strings.Repeat("x", 511))); err != nil {
+		t.Fatal(err)
+	}
 	if err := node.Crash(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +78,7 @@ func TestLiveWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	ps(`$d=@(Get-Disk | Where-Object { $_.SerialNumber.Trim() -eq 'lc-volume' }); if($d.Count -ne 1){throw 'disk missing'}; $d[0] | Set-Disk -IsOffline $false; $d[0] | Set-Disk -IsReadOnly $false; $p=Get-Partition -DiskNumber $d[0].Number | Where-Object Type -eq 'Basic'; if($p.DriveLetter -ne 'V'){$p | Set-Partition -NewDriveLetter V}; if([IO.File]::ReadAllText('V:\marker') -ne 'durable-windows'){throw 'durable marker lost'}`)
+	ps(`if([IO.File]::ReadAllText('V:\upload-before-crash.txt') -cne ('x'*511)){throw 'uploaded data lost after crash'}; if([Convert]::ToBase64String([IO.File]::ReadAllBytes('V:\uploaded.bin')) -ne 'AAoN/4Aq'){throw 'binary upload lost after crash'}`)
 	afterBoot := string(ps(`(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString("O")`).GetStdout())
 	if beforeBoot == afterBoot {
 		t.Fatal("VM boot identity did not change after crash")

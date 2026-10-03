@@ -78,7 +78,7 @@ func TestUploadDistinguishesExactBoundaryFromTruncation(t *testing.T) {
 							return
 						}
 						reply = map[string]any{"count": len(data)}
-					case "guest-file-close":
+					case "guest-file-flush", "guest-file-close":
 						reply = map[string]any{}
 					default:
 						done <- fmt.Errorf("unexpected command %s", request.Execute)

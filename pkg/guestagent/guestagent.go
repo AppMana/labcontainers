@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -209,7 +210,7 @@ func (a *Agent) Call(ctx context.Context, command string, args, into any) (err e
 	return nil
 }
 
-func (a *Agent) Upload(ctx context.Context, body io.Reader, path string) error {
+func (a *Agent) Upload(ctx context.Context, body io.Reader, path string) (result error) {
 	var handle int64
 	if err := a.Call(ctx, "guest-file-open", map[string]any{"path": path, "mode": "w"}, &handle); err != nil {
 		return err
@@ -217,7 +218,7 @@ func (a *Agent) Upload(ctx context.Context, body io.Reader, path string) error {
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = a.Call(cleanup, "guest-file-close", map[string]any{"handle": handle}, nil)
+		result = errors.Join(result, a.Call(cleanup, "guest-file-close", map[string]any{"handle": handle}, nil))
 	}()
 	buf := make([]byte, 192*1024)
 	for {
@@ -234,7 +235,9 @@ func (a *Agent) Upload(ctx context.Context, body io.Reader, path string) error {
 			}
 		}
 		if err == io.EOF {
-			return nil
+			// Closing a Windows handle alone does not flush cached file data.
+			// Require QGA's flush acknowledgement before reporting upload success.
+			return a.Call(ctx, "guest-file-flush", map[string]any{"handle": handle}, nil)
 		}
 		if err != nil {
 			return err
