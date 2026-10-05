@@ -185,6 +185,11 @@ func (a *Agent) Call(ctx context.Context, command string, args, into any) (err e
 	if err != nil {
 		return err
 	}
+	// The guest refuses a larger message, and a partly parsed one is no
+	// reply at all; nothing is written.
+	if len(request) > transferlimits.QGAMessage {
+		return fmt.Errorf("%s message of %d bytes exceeds the guest agent's %d-byte message limit; transfer files explicitly instead", command, len(request), transferlimits.QGAMessage)
+	}
 	if _, err = a.conn.Write(append(request, '\n')); err != nil {
 		return err
 	}

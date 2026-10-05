@@ -322,7 +322,8 @@ request/result fields and call options. No VM, network, or management path is
 created by the adapter.
 
 The current buffered transport accepts files up to 256 MiB and QGA command
-stdin up to 64 MiB. Oversized payloads fail explicitly, rather than silently
+stdin up to 47.25 MiB (`MaxGuestExecStdinBytes`): stdin travels base64-encoded
+inside one guest agent message, and QEMU refuses a message over 64 MiB. Oversized payloads fail explicitly, rather than silently
 truncating. An unknown-length HTTP upload can leave a partial destination file
 on failure; uploads are not atomic. These limits do not provide a large-image
 archive transport. Rebuild the VM wrapper's guest-control binary to apply the
