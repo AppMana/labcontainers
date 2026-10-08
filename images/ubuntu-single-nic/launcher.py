@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess
-from interfaces import declared_nics, free_page_reporting, isolate_control_listeners, virtio_root_disk, wait_for_interfaces
+from interfaces import declared_nics, die_with_launcher, die_with_parent, free_page_reporting, isolate_control_listeners, virtio_root_disk, use_netns_interface_view, wait_for_interfaces
 
 spec = importlib.util.spec_from_file_location("ubuntu_launcher", "/launch.py")
 ubuntu = importlib.util.module_from_spec(spec)
@@ -21,6 +21,7 @@ class DeclaredNICs(ubuntu.Ubuntu_vm):
         self.mgmt_udp_ports = []
         super().__init__(hostname, username, password, nics, connection_mode)
         isolate_control_listeners(self)
+        die_with_launcher(self)
         virtio_root_disk(self)
         free_page_reporting(self)
         self.qemu_args.extend([
@@ -55,6 +56,7 @@ if __name__ == "__main__":
     # vrnetlab that every provisioned interface is topology-owned so it does not
     # wait forever for a nonexistent Docker management interface.
     os.environ.setdefault("VR_MGMT_IS_A_LINK", "true")
+    use_netns_interface_view()
     parser = argparse.ArgumentParser()
     parser.add_argument("--hostname", default="ubuntu")
     parser.add_argument("--username", default="sysadmin")
@@ -65,7 +67,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     nics = declared_nics(args.nics)
     logging.basicConfig(level=logging.DEBUG if args.trace else logging.INFO)
-    subprocess.Popen(["/labcontainers-guest", "serve"])
+    subprocess.Popen(["/labcontainers-guest", "serve"], preexec_fn=die_with_parent)
     reset = Path("/labcontainers-reset-instance")
     if reset.exists():
         for disk in Path("/").glob("*-overlay.qcow2"):

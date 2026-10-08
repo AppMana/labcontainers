@@ -10,7 +10,7 @@ import os
 import subprocess
 
 import vrnetlab
-from interfaces import declared_nics
+from interfaces import declared_nics, die_with_parent
 from qga_vm import WindowsVM as SerialQGAVM
 
 
@@ -64,5 +64,5 @@ if __name__ == "__main__":
     parser.add_argument("--trace", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.trace else logging.INFO)
-    subprocess.Popen(["/labcontainers-guest", "serve"])
+    subprocess.Popen(["/labcontainers-guest", "serve"], preexec_fn=die_with_parent)
     VyOS(declared_nics(args.nics), args.connection_mode).start()

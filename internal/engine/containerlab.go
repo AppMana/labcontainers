@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -299,7 +300,9 @@ func (c *Containerlab) LinkUp(ctx context.Context, lab, node, _ string, iface st
 	if iface == "" || iface == "." || iface == ".." || strings.ContainsAny(iface, "/\x00") {
 		return false, fmt.Errorf("invalid native interface name %q", iface)
 	}
-	argv := []string{"cat", "/sys/class/net/" + iface + "/flags"}
+	// Netlink, not /sys/class/net: a rootless runtime that cannot mount the
+	// container's own sysfs shows the outer namespace's interfaces there.
+	argv := []string{"ip", "-o", "link", "show", "dev", iface}
 	r, err := c.Exec(ctx, lab, node, "container", 30*time.Second, nil, argv)
 	if err != nil {
 		return false, err
@@ -307,11 +310,46 @@ func (c *Containerlab) LinkUp(ctx context.Context, lab, node, _ string, iface st
 	if r.ExitCode != 0 {
 		return false, &CommandError{Argv: argv, Result: r}
 	}
-	flags, err := strconv.ParseUint(strings.TrimSpace(string(r.Stdout)), 0, 32)
+	link, err := parseIPLink(strings.TrimSpace(string(r.Stdout)))
 	if err != nil {
 		return false, fmt.Errorf("read native link state: %w", err)
 	}
-	return flags&1 != 0, nil // Linux IFF_UP; not carrier state (IFF_RUNNING).
+	if link.name != iface {
+		return false, fmt.Errorf("read native link state: asked for %q, got %q", iface, link.name)
+	}
+	return slices.Contains(link.flags, "UP"), nil // Linux IFF_UP; not carrier state (LOWER_UP).
+}
+
+type ipLink struct {
+	name   string
+	flags  []string
+	master string
+}
+
+// parseIPLink reads one line of `ip -o link show` (iproute2 or BusyBox).
+func parseIPLink(line string) (ipLink, error) {
+	_, rest, ok := strings.Cut(line, ": ")
+	if !ok {
+		return ipLink{}, fmt.Errorf("unexpected link line %q", line)
+	}
+	name, rest, ok := strings.Cut(rest, ": <")
+	if !ok {
+		return ipLink{}, fmt.Errorf("unexpected link line %q", line)
+	}
+	name, _, _ = strings.Cut(name, "@")
+	flagText, rest, ok := strings.Cut(rest, ">")
+	if !ok || name == "" {
+		return ipLink{}, fmt.Errorf("unexpected link line %q", line)
+	}
+	link := ipLink{name: name, flags: strings.Split(flagText, ",")}
+	fields := strings.Fields(rest)
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == "master" {
+			link.master = fields[i+1]
+			break
+		}
+	}
+	return link, nil
 }
 
 func (c *Containerlab) SetLink(ctx context.Context, lab, node, _ string, iface string, up bool) error {

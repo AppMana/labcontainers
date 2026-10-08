@@ -20,7 +20,7 @@ class VyOSLauncherTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("vyos_launcher", Path(__file__).resolve().parents[2] / "images/vyos/launcher.py")
         module = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, vrnetlab=types.SimpleNamespace(VR=object),
-                        interfaces=types.SimpleNamespace(declared_nics=Mock()),
+                        interfaces=types.SimpleNamespace(declared_nics=Mock(), die_with_parent=Mock()),
                         qga_vm=types.SimpleNamespace(WindowsVM=SerialQGA)):
             spec.loader.exec_module(module)
         return module

@@ -61,8 +61,8 @@ func (c *Containerlab) saveAttachments(ctx context.Context, topology, node strin
 	}
 	var saved []peerAttachment
 	for id := range peers {
-		r, err := checked(ctx, c.Runner, nil, "docker", "exec", id, "sh", "-ec",
-			`for p in /sys/class/net/*; do if [ -L "$p/master" ]; then m=$(readlink "$p/master"); printf '%s %s\n' "${p##*/}" "${m##*/}"; fi; done`)
+		// Netlink, not /sys/class/net, which may show the outer namespace.
+		r, err := checked(ctx, c.Runner, nil, "docker", "exec", id, "ip", "-o", "link", "show")
 		if err != nil {
 			return err
 		}
@@ -70,11 +70,13 @@ func (c *Containerlab) saveAttachments(ctx context.Context, topology, node strin
 			if line == "" {
 				continue
 			}
-			fields := strings.Fields(line)
-			if len(fields) != 2 {
-				return fmt.Errorf("invalid attachment %q", line)
+			link, err := parseIPLink(line)
+			if err != nil {
+				return fmt.Errorf("invalid attachment: %w", err)
 			}
-			saved = append(saved, peerAttachment{id, fields[0], fields[1]})
+			if link.master != "" {
+				saved = append(saved, peerAttachment{id, link.name, link.master})
+			}
 		}
 	}
 	if len(saved) == 0 {

@@ -16,7 +16,7 @@ class WindowsLauncherHealthTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("windows_health_test_launcher", path)
         module = importlib.util.module_from_spec(spec)
         vrnetlab = types.SimpleNamespace(VM=base_vm, VR=object)
-        interfaces = types.SimpleNamespace(declared_nics=Mock(), isolate_control_listeners=Mock(), wait_for_interfaces=Mock())
+        interfaces = types.SimpleNamespace(declared_nics=Mock(), die_with_launcher=Mock(), die_with_parent=Mock(), isolate_control_listeners=Mock(), use_netns_interface_view=Mock(), wait_for_interfaces=Mock())
         with patch.dict(sys.modules, vrnetlab=vrnetlab, interfaces=interfaces):
             spec.loader.exec_module(module)
         return module

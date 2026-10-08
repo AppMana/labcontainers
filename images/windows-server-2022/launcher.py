@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import vrnetlab
-from interfaces import declared_nics, isolate_control_listeners, wait_for_interfaces
+from interfaces import declared_nics, die_with_launcher, die_with_parent, isolate_control_listeners, use_netns_interface_view, wait_for_interfaces
 
 
 class WindowsVM(vrnetlab.VM):
@@ -23,6 +23,7 @@ class WindowsVM(vrnetlab.VM):
         image = '/' + bases[0]
         super().__init__('Administrator', '', disk_image=image, ram=8192, smp='4')
         isolate_control_listeners(self)
+        die_with_launcher(self)
         self.num_nics = nics
         self.conn_mode = connection_mode
         self.nic_type = 'virtio-net-pci'
@@ -72,6 +73,7 @@ class Windows(vrnetlab.VR):
 
 if __name__ == '__main__':
     os.environ.setdefault('VR_MGMT_IS_A_LINK', 'true')
+    use_netns_interface_view()
     parser = argparse.ArgumentParser()
     parser.add_argument('--nics', type=int, default=None)
     parser.add_argument('--hostname', default='windows')
@@ -84,7 +86,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     nics = declared_nics(args.nics)
     logging.basicConfig(level=logging.DEBUG if args.trace else logging.INFO)
-    subprocess.Popen(['/labcontainers-guest', 'serve'])
+    subprocess.Popen(['/labcontainers-guest', 'serve'], preexec_fn=die_with_parent)
     reset = Path('/labcontainers-reset-instance')
     if reset.exists():
         for disk in Path('/').glob('*-overlay.qcow2'):

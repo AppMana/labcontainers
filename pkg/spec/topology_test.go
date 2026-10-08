@@ -2,8 +2,11 @@ package spec
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func TestPreparePreservesContainerlabTopologyAndAddsOwnership(t *testing.T) {
@@ -101,5 +104,43 @@ topology:
 	got := string(p.YAML)
 	if !strings.Contains(got, "existing:/existing") || !strings.Contains(got, "disk:/disk") {
 		t.Fatalf("binds lost:\n%s", got)
+	}
+}
+
+func TestPrepareRunsTestNodesUnprivilegedUnlessTopologyChooses(t *testing.T) {
+	p, err := Prepare([]byte(`name: rootless
+topology:
+  kinds:
+    linux: {cap-add: [SYS_PTRACE]}
+  nodes:
+    vm: {kind: generic_vm, image: vm:1, devices: [/dev/kvm]}
+    peer: {kind: linux, image: alpine:3.20}
+    chosen: {kind: linux, image: alpine:3.20, privileged: true}
+`), "suite", "session-1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Topology struct {
+			Nodes map[string]struct {
+				Privileged *bool    `yaml:"privileged"`
+				CapAdd     []string `yaml:"cap-add"`
+				Devices    []string `yaml:"devices"`
+			} `yaml:"nodes"`
+		} `yaml:"topology"`
+	}
+	if err := yamlv3.Unmarshal(p.YAML, &doc); err != nil {
+		t.Fatal(err)
+	}
+	vm, peer, chosen := doc.Topology.Nodes["vm"], doc.Topology.Nodes["peer"], doc.Topology.Nodes["chosen"]
+	if vm.Privileged == nil || *vm.Privileged || !reflect.DeepEqual(vm.CapAdd, []string{"NET_ADMIN"}) || !reflect.DeepEqual(vm.Devices, []string{"/dev/kvm", "/dev/net/tun"}) {
+		t.Fatalf("vm: %+v", vm)
+	}
+	// Kind-level SYS_PTRACE still applies through Containerlab's merge.
+	if peer.Privileged == nil || *peer.Privileged || !reflect.DeepEqual(peer.CapAdd, []string{"NET_ADMIN", "NET_RAW"}) || peer.Devices != nil {
+		t.Fatalf("peer: %+v", peer)
+	}
+	if chosen.Privileged == nil || !*chosen.Privileged || chosen.CapAdd != nil {
+		t.Fatalf("explicit privilege must be preserved: %+v", chosen)
 	}
 }

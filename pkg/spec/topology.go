@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -291,6 +292,20 @@ func validateAndLabel(nodes *yaml.Node, native *types.Topology, sessionID string
 				return fmt.Errorf("node %q publishes host ports in an isolated lab", name)
 			}
 		}
+		if (kind == "generic_vm" || kind == "linux") && native.GetNodePrivileged(name, true) != native.GetNodePrivileged(name, false) {
+			// Containerlab runs every kind privileged unless told otherwise.
+			// Privilege needs a read-write sysfs and every host device, which a
+			// rootless runtime cannot grant. Test nodes configure their own
+			// interfaces; VM wrappers need KVM and tap devices for QEMU.
+			setBool(node, "privileged", false)
+			if kind == "generic_vm" {
+				appendMissing(node, "cap-add", native.GetNodeCapAdd(name), "NET_ADMIN")
+				appendMissing(node, "devices", native.GetNodeDevices(name), "/dev/kvm", "/dev/net/tun")
+			} else {
+				// Docker grants NET_RAW by default and Podman does not; probes use ping.
+				appendMissing(node, "cap-add", native.GetNodeCapAdd(name), "NET_ADMIN", "NET_RAW")
+			}
+		}
 		labels := ensureMapping(node, "labels")
 		setScalar(labels, "labcontainers.appmana.com/session", sessionID)
 		setScalar(labels, "labcontainers.appmana.com/managed", "true")
@@ -371,6 +386,18 @@ func ensureSequence(n *yaml.Node, key string) *yaml.Node {
 	v := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	n.Content = append(n.Content, k, v)
 	return v
+}
+
+// appendMissing adds values not already resolved for the node from any level
+// (node, group, kind or defaults).
+func appendMissing(n *yaml.Node, key string, resolved []string, values ...string) {
+	for _, value := range values {
+		if slices.Contains(resolved, value) {
+			continue
+		}
+		sequence := ensureSequence(n, key)
+		sequence.Content = append(sequence.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+	}
 }
 
 func setScalar(n *yaml.Node, key, value string) {

@@ -15,9 +15,9 @@ trap 'rm -rf -- "$build_dir"' EXIT
 cp -a "$source_dir/." "$build_dir/"
 chmod -R u+w "$build_dir"
 cd "$build_dir"
-git apply "$root/patches/containerlab-owned-eth0.patch" "$root/patches/containerlab-stopped-endpoints.patch"
-GOWORK=off go test ./links ./core
-patch_sum=$(cat "$root/patches/containerlab-owned-eth0.patch" "$root/patches/containerlab-stopped-endpoints.patch" | sha256sum)
+git apply "$root/patches/containerlab-owned-eth0.patch" "$root/patches/containerlab-stopped-endpoints.patch" "$root/patches/containerlab-netns-none-sysctl.patch"
+GOWORK=off go test ./links ./core ./nodes/linux
+patch_sum=$(cat "$root/patches/containerlab-owned-eth0.patch" "$root/patches/containerlab-stopped-endpoints.patch" "$root/patches/containerlab-netns-none-sysctl.patch" | sha256sum)
 patch_sum=${patch_sum%% *}
 GOWORK=off go build -trimpath \
   -ldflags "-X github.com/srl-labs/containerlab/cmd.Version=0.79.0 -X github.com/srl-labs/containerlab/cmd.commit=5ae50094+patch-$patch_sum" \

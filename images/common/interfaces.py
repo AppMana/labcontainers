@@ -35,7 +35,21 @@ def declared_nics(requested=None):
     return count
 
 
-def wait_for_interfaces(vm, root=Path("/sys/class/net"), timeout=120):
+def netns_interfaces(dev=Path("/proc/net/dev")):
+    """Interfaces of this process's network namespace.
+
+    /proc/net follows the reader's namespace. /sys/class/net does not when a
+    rootless runtime could not mount a fresh sysfs and bind-mounted its own.
+    """
+    names = set()
+    for line in dev.read_text().splitlines()[2:]:
+        name, sep, _ = line.partition(":")
+        if sep:
+            names.add(name.strip())
+    return names
+
+
+def wait_for_interfaces(vm, list_interfaces=netns_interfaces, timeout=120):
     """Wait for exactly eth1..ethN before upstream gen_nics runs.
 
     Sparse indices would cause vrnetlab to create socket-backed placeholder
@@ -44,7 +58,7 @@ def wait_for_interfaces(vm, root=Path("/sys/class/net"), timeout=120):
     expected = {f"eth{i}" for i in range(1, vm.num_nics + 1)}
     deadline = time.monotonic() + timeout
     while True:
-        found = {p.name for p in root.glob("eth*")}
+        found = {name for name in list_interfaces() if name.startswith("eth")}
         unexpected = found - expected
         if unexpected:
             raise ValueError(f"undeclared or unsupported VM endpoints: {sorted(unexpected)}; expected {sorted(expected)}")
@@ -55,6 +69,48 @@ def wait_for_interfaces(vm, root=Path("/sys/class/net"), timeout=120):
         if time.monotonic() >= deadline:
             raise TimeoutError(f"declared VM endpoints did not arrive: {sorted(expected - found)}")
         time.sleep(0.1)
+
+
+def use_netns_interface_view(list_interfaces=netns_interfaces):
+    """Answer vrnetlab's /sys/class/net existence checks from this namespace.
+
+    Under a rootless runtime in an unprivileged pod, the container cannot
+    mount its own sysfs (the pod's is partly masked), so the runtime
+    bind-mounts the pod's, which lists the pod's interfaces. vrnetlab only
+    tests /sys/class/net/ethN for existence; QEMU, tc and ip use netlink.
+    """
+    exists = os.path.exists
+    prefix = "/sys/class/net/"
+
+    def netns_exists(path):
+        text = os.fspath(path)
+        if text.startswith(prefix) and "/" not in text[len(prefix):]:
+            return text[len(prefix):] in list_interfaces()
+        return exists(path)
+
+    os.path.exists = netns_exists
+
+
+def die_with_launcher(vm):
+    """Make QEMU exit when the launcher (the container's PID 1) is killed.
+
+    A runtime that shares the host PID namespace and has no cgroup (rootless
+    Podman in an unprivileged pod) can only signal PID 1, so a crash or
+    removal would otherwise leave QEMU running with the disks open.
+    """
+    if vm.qemu_args[0].startswith("qemu-system-"):
+        vm.qemu_args[0] = "setpriv --pdeathsig KILL " + vm.qemu_args[0]
+    elif not vm.qemu_args[0].startswith("setpriv --pdeathsig KILL qemu-system-"):
+        raise ValueError(f"unexpected QEMU command {vm.qemu_args[0]!r}")
+
+
+def die_with_parent():
+    """Popen preexec_fn: SIGKILL this child when its parent exits."""
+    import ctypes
+    import signal
+    PR_SET_PDEATHSIG = 1
+    if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG)")
 
 
 def virtio_root_disk(vm):

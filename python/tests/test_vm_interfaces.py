@@ -34,6 +34,24 @@ class VMInterfacesTest(unittest.TestCase):
                 interfaces.isolate_control_listeners(vm)
             self.assertEqual(vm.qemu_args, broken)
 
+    def test_netns_interfaces_parse_proc_net_dev(self):
+        with TemporaryDirectory() as tmp:
+            dev = Path(tmp) / "dev"
+            dev.write_text("Inter-|   Receive\n face |bytes\n    lo: 0 0\n  eth1: 1 2\neth10: 3 4\n")
+            self.assertEqual(interfaces.netns_interfaces(dev), {"lo", "eth1", "eth10"})
+
+    def test_sysfs_net_existence_follows_this_namespace(self):
+        original = os.path.exists
+        try:
+            interfaces.use_netns_interface_view(lambda: {"lo", "eth1"})
+            self.assertTrue(os.path.exists("/sys/class/net/eth1"))
+            self.assertFalse(os.path.exists("/sys/class/net/eth0"))
+            self.assertFalse(os.path.exists("/sys/class/net/eth2"))
+            self.assertEqual(os.path.exists("/sys/class/net/eth1/address"), original("/sys/class/net/eth1/address"))
+            self.assertTrue(os.path.exists(__file__))
+        finally:
+            os.path.exists = original
+
     def test_root_overlay_moves_to_virtio_blk(self):
         args = ["qemu-system-x86_64", "-m", "512",
                 "-drive", "if=ide,file=/jammy-qga-overlay.qcow2",
@@ -54,6 +72,32 @@ class VMInterfacesTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 interfaces.virtio_root_disk(vm)
             self.assertEqual(vm.qemu_args, broken)
+
+    def test_qemu_dies_with_the_launcher(self):
+        vm = SimpleNamespace(qemu_args=["qemu-system-x86_64", "-m", "512"])
+        interfaces.die_with_launcher(vm)
+        self.assertEqual(vm.qemu_args, ["setpriv --pdeathsig KILL qemu-system-x86_64", "-m", "512"])
+        interfaces.die_with_launcher(vm)
+        self.assertEqual(vm.qemu_args[0], "setpriv --pdeathsig KILL qemu-system-x86_64")
+        with self.assertRaises(ValueError):
+            interfaces.die_with_launcher(SimpleNamespace(qemu_args=["/usr/bin/kvm"]))
+
+    def test_child_is_killed_with_its_parent(self):
+        import subprocess, signal, sys, time
+        script = "import subprocess,sys,time; p=subprocess.Popen(['sleep','60'], preexec_fn=__import__('interfaces').die_with_parent); print(p.pid, flush=True); time.sleep(60)"
+        env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2] / "images/common"))
+        parent = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True, env=env)
+        child = int(parent.stdout.readline())
+        parent.send_signal(signal.SIGKILL)
+        parent.wait()
+        for _ in range(50):
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("child outlived its killed parent")
 
     def test_free_page_reporting_device(self):
         vm = SimpleNamespace(qemu_args=["qemu-system-x86_64"])
@@ -82,7 +126,7 @@ class VMInterfacesTest(unittest.TestCase):
                 for i in range(1, count + 1):
                     (root / f"eth{i}").touch()
                 vm = SimpleNamespace(num_nics=count)
-                interfaces.wait_for_interfaces(vm, root, timeout=0)
+                interfaces.wait_for_interfaces(vm, lambda: {p.name for p in root.iterdir()}, timeout=0)
                 self.assertEqual(vm.num_provisioned_nics, count)
                 self.assertEqual(vm.highest_provisioned_nic_num, count)
 
@@ -93,4 +137,4 @@ class VMInterfacesTest(unittest.TestCase):
                 for name in found:
                     (root / name).touch()
                 with self.assertRaises((ValueError, TimeoutError)):
-                    interfaces.wait_for_interfaces(SimpleNamespace(num_nics=1), root, timeout=0)
+                    interfaces.wait_for_interfaces(SimpleNamespace(num_nics=1), lambda: {p.name for p in root.iterdir()}, timeout=0)

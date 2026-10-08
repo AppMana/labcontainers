@@ -1,0 +1,15 @@
+--- a/nodes/linux/linux.go
++++ b/nodes/linux/linux.go
+@@ -63,8 +63,10 @@
+ 	}
+ 
+ 	// make ipv6 enabled on all linux node interfaces
+-	// but not for the nodes with host network mode, as this is not supported on gh action runners
+-	if cfg.Sysctls != nil && n.Config().NetworkMode != "host" {
++	// but not for the nodes with host network mode, as this is not supported on gh action runners.
++	// A new namespace of a network-mode none node already has IPv6 enabled; writing the
++	// sysctl anyway fails under rootless runtimes whose /proc/sys is read-only.
++	if cfg.Sysctls != nil && n.Config().NetworkMode != "host" && n.Config().NetworkMode != "none" {
+ 		cfg.Sysctls["net.ipv6.conf.all.disable_ipv6"] = "0"
+ 	}
+ 

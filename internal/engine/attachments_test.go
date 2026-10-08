@@ -27,13 +27,14 @@ func (f *attachmentRunner) Run(_ context.Context, _ io.Reader, argv ...string) (
 			return Result{}, nil
 		}
 		return Result{Stdout: []byte("peer-id\tswitch\n")}, nil
-	case strings.Contains(s, "docker exec peer-id sh"):
+	case strings.Contains(s, "docker exec peer-id ip -o link show"):
 		if f.failSave {
 			return Result{}, errors.New("cannot inspect peer")
 		}
 		if f.attached {
-			return Result{Stdout: []byte("eth3 br0\n")}, nil
+			return Result{Stdout: []byte("1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN\n4: br0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP\n5: eth3@if6: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master br0 state UP\n")}, nil
 		}
+		return Result{Stdout: []byte("1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN\n")}, nil
 	case strings.Contains(s, "docker ps -q"):
 		return Result{Stdout: []byte("vm-id\n")}, nil
 	case strings.Contains(s, "docker kill"):
