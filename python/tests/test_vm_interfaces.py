@@ -34,6 +34,32 @@ class VMInterfacesTest(unittest.TestCase):
                 interfaces.isolate_control_listeners(vm)
             self.assertEqual(vm.qemu_args, broken)
 
+    def test_root_overlay_moves_to_virtio_blk(self):
+        args = ["qemu-system-x86_64", "-m", "512",
+                "-drive", "if=ide,file=/jammy-qga-overlay.qcow2",
+                "-cdrom", "/cloud_init.iso"]
+        vm = SimpleNamespace(qemu_args=args)
+        interfaces.virtio_root_disk(vm)
+        self.assertEqual(vm.qemu_args, ["qemu-system-x86_64", "-m", "512",
+                                        "-drive", "if=none,id=lc-root,file=/jammy-qga-overlay.qcow2,discard=unmap",
+                                        "-device", "virtio-blk-pci,drive=lc-root,bootindex=0",
+                                        "-cdrom", "/cloud_init.iso"])
+        self.assertEqual(args[4], "if=ide,file=/jammy-qga-overlay.qcow2", "must not mutate the input list")
+
+    def test_root_overlay_rewrite_fails_closed(self):
+        overlay = ["-drive", "if=ide,file=/a-overlay.qcow2"]
+        for broken in ([], overlay + overlay, ["-drive", "if=ide,file=/a.qcow2"],
+                       ["-drive", "if=ide,file=/a-overlay.qcow2,cache=none"], ["-hda", "if=ide,file=/a-overlay.qcow2"]):
+            vm = SimpleNamespace(qemu_args=list(broken))
+            with self.assertRaises(ValueError):
+                interfaces.virtio_root_disk(vm)
+            self.assertEqual(vm.qemu_args, broken)
+
+    def test_free_page_reporting_device(self):
+        vm = SimpleNamespace(qemu_args=["qemu-system-x86_64"])
+        interfaces.free_page_reporting(vm)
+        self.assertEqual(vm.qemu_args, ["qemu-system-x86_64", "-device", "virtio-balloon-pci,id=lc-balloon,free-page-reporting=on"])
+
     def test_native_count_has_no_default_nic(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(interfaces.declared_nics(), 0)

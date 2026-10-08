@@ -10,6 +10,41 @@ CGO_ENABLED=0 go build -o images/ubuntu-single-nic/labcontainers-guest ./cmd/lab
 docker build --build-context labcontainers-common=images/common -t labcontainers/vm-ubuntu:jammy images/ubuntu-single-nic
 ```
 
+For test runners, build the wrapper on the lean base instead. `lean-base.sh`
+derives it offline from the `jammy-qga.qcow2` inside
+`vrnetlab/canonical_ubuntu:jammy-qga` (pass that file's SHA-256): it purges
+snapd and other cloud-platform agents, disables background timers, limits
+cloud-init to the NoCloud seed, and sparsifies the disk. It needs
+`virt-customize` and `virt-sparsify` (run with `sudo` on Ubuntu, whose kernels
+are not world-readable). Package the result with vrnetlab's Ubuntu Dockerfile:
+
+```sh
+sudo images/ubuntu-single-nic/lean-base.sh jammy-qga.qcow2 <sha256> /abs/build/jammy-qga-lean.qcow2
+docker build -f vrnetlab/ubuntu/docker/Dockerfile --build-arg IMAGE=jammy-qga-lean.qcow2 \
+  -t vrnetlab/canonical_ubuntu:jammy-qga-lean /abs/build   # context also holds vrnetlab's launch.py
+docker build --build-context labcontainers-common=images/common \
+  --build-arg VRNETLAB_IMAGE=vrnetlab/canonical_ubuntu:jammy-qga-lean \
+  -t labcontainers/vm-ubuntu:lean images/ubuntu-single-nic
+```
+
+The wrapper attaches the root overlay as virtio-blk and adds a virtio balloon
+with free page reporting, so memory the guest frees returns to the host. Guests
+default to 512 MiB and one vCPU; set `QEMU_MEMORY` (MiB) and `QEMU_SMP` in a
+node's native `Env` when a scenario needs more.
+
+`TestLiveVMFootprint` measures boot time and host memory per VM:
+
+```sh
+LABCONTAINERS_FOOTPRINT_LIVE=1 LABCONTAINERS_FOOTPRINT_VMS=8 \
+  LABCONTAINERS_VM_IMAGE=labcontainers/vm-ubuntu:lean \
+  go test ./pkg/client -run '^TestLiveVMFootprint$' -v -count=1 -timeout=20m
+```
+
+It writes `footprint.json` (QGA and cloud-init readiness, `systemd-analyze`,
+QEMU and wrapper RSS before and after a freed guest allocation) to the
+session's artifact directory. `LABCONTAINERS_FOOTPRINT_ENV=QEMU_MEMORY=768,QEMU_SMP=2`
+passes node environment unchanged to compare sizes.
+
 The wrapper has no management NIC. Zero or more Ethernet interfaces are supplied
 by the Containerlab topology; commands use QEMU Guest Agent over virtio-serial.
 The native `CLAB_INTFS` endpoint count controls NIC count. Endpoints must be

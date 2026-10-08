@@ -55,3 +55,29 @@ def wait_for_interfaces(vm, root=Path("/sys/class/net"), timeout=120):
         if time.monotonic() >= deadline:
             raise TimeoutError(f"declared VM endpoints did not arrive: {sorted(expected - found)}")
         time.sleep(0.1)
+
+
+def virtio_root_disk(vm):
+    """Attach vrnetlab's root overlay as virtio-blk instead of emulated IDE.
+
+    Firmware and guest both read the root disk faster over virtio, and the
+    guest's discards shrink the overlay. Fail closed unless exactly one
+    native IDE overlay drive is present.
+    """
+    arguments = list(vm.qemu_args)
+    matches = [i for i, arg in enumerate(arguments)
+               if i > 0 and arguments[i - 1] == "-drive"
+               and arg.startswith("if=ide,file=") and arg.endswith("-overlay.qcow2")
+               and "," not in arg[len("if=ide,file="):]]
+    if len(matches) != 1:
+        raise ValueError("cannot find the unique native IDE root overlay drive")
+    index = matches[0]
+    overlay = arguments[index][len("if=ide,file="):]
+    arguments[index] = f"if=none,id=lc-root,file={overlay},discard=unmap"
+    arguments[index + 1:index + 1] = ["-device", "virtio-blk-pci,drive=lc-root,bootindex=0"]
+    vm.qemu_args = arguments
+
+
+def free_page_reporting(vm):
+    """Return memory the guest frees to the host instead of keeping it resident."""
+    vm.qemu_args.extend(["-device", "virtio-balloon-pci,id=lc-balloon,free-page-reporting=on"])

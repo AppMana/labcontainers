@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess
-from interfaces import declared_nics, isolate_control_listeners, wait_for_interfaces
+from interfaces import declared_nics, free_page_reporting, isolate_control_listeners, virtio_root_disk, wait_for_interfaces
 
 spec = importlib.util.spec_from_file_location("ubuntu_launcher", "/launch.py")
 ubuntu = importlib.util.module_from_spec(spec)
@@ -21,6 +21,8 @@ class DeclaredNICs(ubuntu.Ubuntu_vm):
         self.mgmt_udp_ports = []
         super().__init__(hostname, username, password, nics, connection_mode)
         isolate_control_listeners(self)
+        virtio_root_disk(self)
+        free_page_reporting(self)
         self.qemu_args.extend([
             "-chardev", "socket,path=/run/labcontainers-qga.sock,server=on,wait=off,id=qga0",
             "-device", "virtio-serial-pci,id=serial1",
