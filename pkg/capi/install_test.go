@@ -61,7 +61,10 @@ func TestInstallFetchesOnceAndRejectsAManifestWithoutImages(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	component := Component{Name: "empty", URL: server.URL}
-	load := func(context.Context, string) error { t.Fatal("carried an image from an image-less manifest"); return nil }
+	load := func(context.Context, string) error {
+		t.Fatal("carried an image from an image-less manifest")
+		return nil
+	}
 	for range 2 {
 		err := Install(context.Background(), nil, dir, load, component)
 		if err == nil || !strings.Contains(err.Error(), "names no images") {

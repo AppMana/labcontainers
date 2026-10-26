@@ -335,7 +335,11 @@ are started, not reinstalled. `k0s.InstalledDigest` reads the binary every node
 carries when resuming a site. The caller still chooses addresses, the CNI and
 labels; `Site` writes their configuration unchanged. `pkg/wait.Until` is the
 bounded retry it uses: each attempt gets a quarter of the budget, and an
-attempt can stop the wait with `wait.Fatal`. These helpers need only the existing rig contract's command/file
+attempt can stop the wait with `wait.Fatal`. `containerd.CarryArchive` brings
+an image archive exported on the lab host into nodes without a registry: it
+stages the archive on each node as a file (node transports bound stdin well
+below an image's size), runs the caller's import command with its final `-`
+replaced by that path, removes the file, and serves one node at a time. These helpers need only the existing rig contract's command/file
 subset, `rig.Commands`; they do not require lifecycle or network-fault methods.
 Use `session.Node("controller").Commands()` with a normal Go session, or pass
 an existing product `rig.Node` directly. The adapter uses the same RPC and
