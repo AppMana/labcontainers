@@ -300,7 +300,8 @@ with upstream Kubernetes `runtime.Object` values (for example generated
 The SDK sends a native Kubernetes List over stdin to kubectl on the explicitly
 selected bastion. No caller-authored YAML or manifest file is needed.
 Unstructured CRDs retain their fields. CAPI association assertions stay in the
-product, and extraction of the six distribution builders is still pending.
+product. Of the six distribution builders, k0s is extracted (`k0s.Site`, below);
+the others are still pending.
 
 `pkg/kubernetes/k0s` is a thin, optional k0s coupling layer. Pass an upstream
 `github.com/k0sproject/k0s/pkg/apis/k0s/v1beta1.ClusterConfig` to
@@ -311,7 +312,21 @@ address, load balancer, or image. `k0s.Install(ctx, node, "controller",
 shell. The caller stages the intended binary, explicitly starts it with
 `node.Exec(ctx, "k0s", "start")`, and owns orchestration and retry policy.
 `k0s.Ready(ctx, node)` is one supervisor/API/kubeconfig probe, not a pod-network
-qualification. These helpers need only the existing rig contract's command/file
+qualification.
+
+`k0s.Site` builds a multi-node cluster from these primitives. Give it the
+content-pinned binary, the exact version every member must report, and the
+members in order, each with its role, install arguments and (controllers only)
+native configuration. `Build` carries the binary and checks every member's
+version before installing anything, starts the first controller and waits for
+its API, then joins each member with a role-specific token minted on the first
+controller; a joining controller serves before the next member joins, because
+adding an etcd member changes quorum. Members already installed as a k0s service
+are started, not reinstalled. `k0s.InstalledDigest` reads the binary every node
+carries when resuming a site. The caller still chooses addresses, the CNI and
+labels; `Site` writes their configuration unchanged. `pkg/wait.Until` is the
+bounded retry it uses: each attempt gets a quarter of the budget, and an
+attempt can stop the wait with `wait.Fatal`. These helpers need only the existing rig contract's command/file
 subset, `rig.Commands`; they do not require lifecycle or network-fault methods.
 Use `session.Node("controller").Commands()` with a normal Go session, or pass
 an existing product `rig.Node` directly. The adapter uses the same RPC and
