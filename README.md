@@ -303,6 +303,15 @@ Unstructured CRDs retain their fields. CAPI association assertions stay in the
 product. Of the six distribution builders, k0s is extracted (`k0s.Site`, below);
 the others are still pending.
 
+`kube.ImagesIn(manifest)` lists the images a manifest names (digest pins kept,
+templated values skipped), so a lab without registry access can carry each one
+in first. `capi.Install(ctx, client, cacheDir, load, capi.CertManager(),
+capi.ClusterAPI(version))` installs released components that way: each manifest
+is downloaded once into `cacheDir`, its images are carried in through the
+caller's `load`, it is applied with clusterctl's default substitution
+(`capi.SubstituteDefaults`), and its Deployments must roll out before the next
+component starts. Infrastructure providers are installed by the caller.
+
 `pkg/kubernetes/k0s` is a thin, optional k0s coupling layer. Pass an upstream
 `github.com/k0sproject/k0s/pkg/apis/k0s/v1beta1.ClusterConfig` to
 `k0s.WriteConfig(ctx, node, "/etc/k0s/k0s.yaml", config)`. It serializes exactly
