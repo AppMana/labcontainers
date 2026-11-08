@@ -84,3 +84,101 @@ func TestLiveKeepSurvivesOwnerCloseAndExpires(t *testing.T) {
 		t.Fatalf("expiry erased evidence: %v", err)
 	}
 }
+
+func TestLiveReaperTearsDownWhenOwnerKilled(t *testing.T) {
+	if os.Getenv("LABCONTAINERS_LIVE") == "" {
+		t.Skip("requires privileged Containerlab")
+	}
+	if os.Getenv("LABCONTAINERS_REAPER_CHILD") == "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		c, err := Launch(ctx, Options{LabdPath: os.Getenv("LABCONTAINERS_REAPER_LABD")})
+		if err != nil {
+			panic(err)
+		}
+		source, err := clab.Source(&core.Config{Topology: &types.Topology{Nodes: map[string]*types.NodeDefinition{
+			"reaped": {Kind: "linux", Image: "alpine:3.20", ImagePullPolicy: "Never", NetworkMode: "none"},
+		}}})
+		if err != nil {
+			panic(err)
+		}
+		lab, err := c.Start(ctx, &labv1.LabSpec{Topology: source}, time.Hour)
+		if err != nil {
+			panic(err)
+		}
+		info := lab.ID() + "\n" + c.Socket() + "\n" + lab.Artifacts() + "\n"
+		if err := os.WriteFile(os.Getenv("LABCONTAINERS_REAPER_INFO"), []byte(info), 0o600); err != nil {
+			panic(err)
+		}
+		// Block forever until parent sends SIGKILL without Close() or Destroy().
+		select {}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	infoFile := filepath.Join(t.TempDir(), "reaper.info")
+	child := exec.CommandContext(ctx, self, "-test.run", "^TestLiveReaperTearsDownWhenOwnerKilled$")
+	child.Env = append(os.Environ(),
+		"LABCONTAINERS_REAPER_CHILD=1",
+		"LABCONTAINERS_REAPER_LABD="+filepath.Join(root, "bin/labd"),
+		"LABCONTAINERS_REAPER_INFO="+infoFile,
+	)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if child.Process != nil {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
+	}()
+
+	var lines []string
+	for {
+		if raw, err := os.ReadFile(infoFile); err == nil {
+			parts := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			if len(parts) == 3 {
+				lines = parts
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("child did not deploy session before timeout")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	sessionID, socket, artifacts := lines[0], lines[1], lines[2]
+
+	// Abruptly SIGKILL the owning test process without calling Close().
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Wait()
+
+	// Wait for the Ryuk-style labd reaper to tear down the topology and exit.
+	for {
+		out, err := exec.CommandContext(ctx, "docker", "ps", "-aq", "--filter", "label=labcontainers.appmana.com/session="+sessionID).Output()
+		if err == nil && strings.TrimSpace(string(out)) == "" {
+			if _, sockErr := os.Stat(socket); os.IsNotExist(sockErr) {
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("reaper did not tear down session %s after owner SIGKILL", sessionID)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if _, err := os.Stat(filepath.Join(artifacts, "events.jsonl")); err != nil {
+		t.Fatalf("reaper erased evidence: %v", err)
+	}
+}

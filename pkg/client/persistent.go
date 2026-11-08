@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"testing"
 	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
@@ -46,7 +47,14 @@ func DeployPersistent(ctx context.Context, opts PersistentOptions, spec *labv1.L
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
+	deployed := false
+	defer func() {
+		if deployed && testing.Testing() {
+			_ = c.conn.Close()
+			return
+		}
+		_ = c.Close()
+	}()
 	session, err := c.Start(ctx, spec, opts.TTL)
 	if err != nil {
 		return nil, err
@@ -59,6 +67,7 @@ func DeployPersistent(ctx context.Context, opts PersistentOptions, spec *labv1.L
 		_ = session.Destroy(context.Background())
 		return nil, err
 	}
+	deployed = true
 	return session.value, nil
 }
 

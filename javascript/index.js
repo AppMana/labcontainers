@@ -54,7 +54,7 @@ class Client {
     stateDir ||= temporaryDirectory ? path.join(temporaryDirectory, "state") : undefined;
     const args = ["--socket", socket, "--parent-pid", String(process.pid)];
     if (stateDir) args.push("--state-dir", stateDir);
-    const daemon = childProcess.spawn(labd, args, {stdio: "inherit"});
+    const daemon = childProcess.spawn(labd, args, {stdio: "inherit", detached: true});
     daemon.once("error", () => {});
     try {
       const client = await Client.dial(socket);

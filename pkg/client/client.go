@@ -64,6 +64,7 @@ func Launch(ctx context.Context, opts Options) (*Client, error) {
 		args = append(args, "--state-dir", opts.StateDir)
 	}
 	cmd := exec.CommandContext(context.Background(), labd, args...)
+	configureDaemonProcess(cmd)
 	// A kept daemon outlives its launching test. Inheriting stderr would also
 	// keep go test's output pipe open after the test exits (exec.ErrWaitDelay).
 	// Give the daemon a real file, not a forwarding goroutine or parent pipe.

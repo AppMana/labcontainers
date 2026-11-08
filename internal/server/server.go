@@ -54,13 +54,20 @@ type Backend interface {
 
 type Server struct {
 	labv1.UnimplementedLabcontainersServer
-	Store   *session.Store
-	Backend Backend
-	mu      sync.Mutex
+	Store       *session.Store
+	Backend     Backend
+	mu          sync.Mutex
+	hadSessions bool
 }
 
 func New(store *session.Store, backend Backend) *Server {
 	return &Server{Store: store, Backend: backend}
+}
+
+func (s *Server) HadSessions() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hadSessions
 }
 
 func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequest) (*labv1.Session, error) {
@@ -157,6 +164,7 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 	if err := s.Store.Create(record); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	s.hadSessions = true
 	if err := createDisks(disks); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -177,6 +185,7 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 		record.State = "failed"
 		_ = s.Store.Save(record)
 		s.event(record, "session.failed", map[string]any{"stage": "validate", "error": err.Error()})
+		_ = s.Store.Delete(record.ID)
 		return nil, status.Errorf(codes.InvalidArgument, "Containerlab validation failed for session %s (evidence: %s): %v", id, artifacts, err)
 	}
 	if err := s.Backend.Deploy(ctx, record.TopologyPath); err != nil {
@@ -184,6 +193,7 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 		_ = s.Store.Save(record)
 		s.event(record, "session.failed", map[string]any{"stage": "deploy", "error": err.Error()})
 		_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
+		_ = s.Store.Delete(record.ID)
 		return nil, status.Errorf(codes.Internal, "deploy session %s (evidence: %s): %v", id, artifacts, err)
 	}
 	if err := s.Backend.ProofIsolation(ctx, record.Name, prepared.IsolatedNodes); err != nil {
@@ -191,6 +201,7 @@ func (s *Server) CreateSession(ctx context.Context, req *labv1.CreateSessionRequ
 		_ = s.Store.Save(record)
 		s.event(record, "session.failed", map[string]any{"stage": "isolation", "error": err.Error()})
 		_ = s.Backend.Destroy(context.Background(), record.TopologyPath)
+		_ = s.Store.Delete(record.ID)
 		return nil, status.Errorf(codes.FailedPrecondition, "isolation proof failed for session %s (evidence: %s): %v", id, artifacts, err)
 	}
 	record.State = "running"
@@ -645,6 +656,14 @@ func (s *Server) Scavenge(ctx context.Context, now time.Time) error {
 }
 
 func (s *Server) CleanupUnkept(ctx context.Context) error {
+	return s.cleanup(ctx, false)
+}
+
+func (s *Server) CleanupAll(ctx context.Context) error {
+	return s.cleanup(ctx, true)
+}
+
+func (s *Server) cleanup(ctx context.Context, includeKept bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	records, err := s.Store.List()
@@ -653,7 +672,7 @@ func (s *Server) CleanupUnkept(ctx context.Context) error {
 	}
 	var errs []error
 	for _, r := range records {
-		if r.Kept {
+		if r.Kept && !includeKept {
 			continue
 		}
 		if err := s.Backend.Destroy(ctx, r.TopologyPath); err != nil {

@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,7 +75,10 @@ func run(socket, stateDir string, parentPID int) error {
 		return err
 	}
 	defer lis.Close()
-	defer os.Remove(socket)
+	defer func() {
+		_ = os.Remove(socket)
+		cleanTempSocketDir(socket, stateDir, store)
+	}()
 	if err := os.Chmod(socket, 0o600); err != nil {
 		return err
 	}
@@ -94,29 +98,34 @@ func run(socket, stateDir string, parentPID int) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	detached := false
+	signaled := false
+	ownerAborted := false
 	for {
-		ownerCleanup := false
 		select {
 		case err := <-done:
 			return err
 		case <-stop:
-			if detached {
+			if signaled {
 				// An explicit second signal stops an already detached daemon.
 				// Session records remain recoverable by another daemon.
 				grpcServer.GracefulStop()
 				return nil
 			}
+			signaled = true
 			detached = true
-			ownerCleanup = true
 			parentGone = nil
 		case <-parentGone:
+			ownerAborted = true
 			detached = true
-			ownerCleanup = true
 			parentGone = nil
 		case <-ticker.C:
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		if ownerCleanup {
+		if ownerAborted {
+			if err := service.CleanupAll(cleanupCtx); err != nil {
+				fmt.Fprintln(os.Stderr, "labd: owner cleanup:", err)
+			}
+		} else if detached {
 			if err := service.CleanupUnkept(cleanupCtx); err != nil {
 				fmt.Fprintln(os.Stderr, "labd: owner cleanup:", err)
 			}
@@ -125,7 +134,7 @@ func run(socket, stateDir string, parentPID int) error {
 			fmt.Fprintln(os.Stderr, "labd: lease cleanup:", err)
 		}
 		cleanupCancel()
-		if detached {
+		if detached || service.HadSessions() {
 			records, err := store.List()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "labd: retained state:", err)
@@ -140,13 +149,45 @@ func run(socket, stateDir string, parentPID int) error {
 }
 
 func watchParent(pid int, gone chan<- struct{}) {
-	path := filepath.Join("/proc", strconv.Itoa(pid))
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for range ticker.C {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		if !parentAlive(pid) {
 			gone <- struct{}{}
 			return
 		}
 	}
+}
+
+func parentAlive(pid int) bool {
+	procDir := filepath.Join("/proc", strconv.Itoa(pid))
+	if _, err := os.Stat(procDir); os.IsNotExist(err) {
+		return false
+	}
+	statBytes, err := os.ReadFile(filepath.Join(procDir, "stat"))
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err == nil {
+		if idx := strings.LastIndexByte(string(statBytes), ')'); idx >= 0 {
+			fields := strings.Fields(string(statBytes[idx+1:]))
+			if len(fields) > 0 && (fields[0] == "Z" || fields[0] == "X" || fields[0] == "x") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func cleanTempSocketDir(socket, _ string, store *session.Store) {
+	dir := filepath.Clean(filepath.Dir(socket))
+	tempRoot := filepath.Clean(os.TempDir())
+	if filepath.Dir(dir) != tempRoot || !strings.HasPrefix(filepath.Base(dir), "labcontainers-") {
+		return
+	}
+	records, err := store.List()
+	if err != nil || len(records) != 0 {
+		return
+	}
+	_ = os.RemoveAll(dir)
 }

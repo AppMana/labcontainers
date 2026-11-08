@@ -33,7 +33,7 @@ class Client:
         argv = [labd, "--socket", self.socket, "--parent-pid", str(os.getpid())]
         if state_dir:
             argv += ["--state-dir", state_dir]
-        self._process = subprocess.Popen(argv)
+        self._process = subprocess.Popen(argv, start_new_session=True)
         self._channel = grpc.insecure_channel("unix://" + self.socket, options=_GRPC_OPTIONS)
         grpc.channel_ready_future(self._channel).result(timeout=10)
         self._rpc = LabcontainersStub(self._channel)
