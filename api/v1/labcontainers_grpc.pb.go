@@ -19,18 +19,21 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Labcontainers_CreateSession_FullMethodName  = "/labcontainers.v1.Labcontainers/CreateSession"
-	Labcontainers_GetSession_FullMethodName     = "/labcontainers.v1.Labcontainers/GetSession"
-	Labcontainers_DestroySession_FullMethodName = "/labcontainers.v1.Labcontainers/DestroySession"
-	Labcontainers_KeepSession_FullMethodName    = "/labcontainers.v1.Labcontainers/KeepSession"
-	Labcontainers_PlanTopology_FullMethodName   = "/labcontainers.v1.Labcontainers/PlanTopology"
-	Labcontainers_ApplyTopology_FullMethodName  = "/labcontainers.v1.Labcontainers/ApplyTopology"
-	Labcontainers_Exec_FullMethodName           = "/labcontainers.v1.Labcontainers/Exec"
-	Labcontainers_Put_FullMethodName            = "/labcontainers.v1.Labcontainers/Put"
-	Labcontainers_Lifecycle_FullMethodName      = "/labcontainers.v1.Labcontainers/Lifecycle"
-	Labcontainers_ApplyFault_FullMethodName     = "/labcontainers.v1.Labcontainers/ApplyFault"
-	Labcontainers_RevertFault_FullMethodName    = "/labcontainers.v1.Labcontainers/RevertFault"
-	Labcontainers_RunTimeline_FullMethodName    = "/labcontainers.v1.Labcontainers/RunTimeline"
+	Labcontainers_CreateSession_FullMethodName     = "/labcontainers.v1.Labcontainers/CreateSession"
+	Labcontainers_GetSession_FullMethodName        = "/labcontainers.v1.Labcontainers/GetSession"
+	Labcontainers_DestroySession_FullMethodName    = "/labcontainers.v1.Labcontainers/DestroySession"
+	Labcontainers_KeepSession_FullMethodName       = "/labcontainers.v1.Labcontainers/KeepSession"
+	Labcontainers_ExtendSession_FullMethodName     = "/labcontainers.v1.Labcontainers/ExtendSession"
+	Labcontainers_CreateCheckpoint_FullMethodName  = "/labcontainers.v1.Labcontainers/CreateCheckpoint"
+	Labcontainers_RestoreCheckpoint_FullMethodName = "/labcontainers.v1.Labcontainers/RestoreCheckpoint"
+	Labcontainers_PlanTopology_FullMethodName      = "/labcontainers.v1.Labcontainers/PlanTopology"
+	Labcontainers_ApplyTopology_FullMethodName     = "/labcontainers.v1.Labcontainers/ApplyTopology"
+	Labcontainers_Exec_FullMethodName              = "/labcontainers.v1.Labcontainers/Exec"
+	Labcontainers_Put_FullMethodName               = "/labcontainers.v1.Labcontainers/Put"
+	Labcontainers_Lifecycle_FullMethodName         = "/labcontainers.v1.Labcontainers/Lifecycle"
+	Labcontainers_ApplyFault_FullMethodName        = "/labcontainers.v1.Labcontainers/ApplyFault"
+	Labcontainers_RevertFault_FullMethodName       = "/labcontainers.v1.Labcontainers/RevertFault"
+	Labcontainers_RunTimeline_FullMethodName       = "/labcontainers.v1.Labcontainers/RunTimeline"
 )
 
 // LabcontainersClient is the client API for Labcontainers service.
@@ -41,6 +44,9 @@ type LabcontainersClient interface {
 	GetSession(ctx context.Context, in *SessionRef, opts ...grpc.CallOption) (*Session, error)
 	DestroySession(ctx context.Context, in *DestroySessionRequest, opts ...grpc.CallOption) (*Empty, error)
 	KeepSession(ctx context.Context, in *KeepSessionRequest, opts ...grpc.CallOption) (*Session, error)
+	ExtendSession(ctx context.Context, in *ExtendSessionRequest, opts ...grpc.CallOption) (*Session, error)
+	CreateCheckpoint(ctx context.Context, in *CheckpointRequest, opts ...grpc.CallOption) (*Checkpoint, error)
+	RestoreCheckpoint(ctx context.Context, in *CheckpointRequest, opts ...grpc.CallOption) (*Checkpoint, error)
 	PlanTopology(ctx context.Context, in *PlanTopologyRequest, opts ...grpc.CallOption) (*NativeApplyResult, error)
 	ApplyTopology(ctx context.Context, in *ApplyTopologyRequest, opts ...grpc.CallOption) (*Session, error)
 	Exec(ctx context.Context, in *ExecRequest, opts ...grpc.CallOption) (*ExecResponse, error)
@@ -93,6 +99,36 @@ func (c *labcontainersClient) KeepSession(ctx context.Context, in *KeepSessionRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Session)
 	err := c.cc.Invoke(ctx, Labcontainers_KeepSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labcontainersClient) ExtendSession(ctx context.Context, in *ExtendSessionRequest, opts ...grpc.CallOption) (*Session, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Session)
+	err := c.cc.Invoke(ctx, Labcontainers_ExtendSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labcontainersClient) CreateCheckpoint(ctx context.Context, in *CheckpointRequest, opts ...grpc.CallOption) (*Checkpoint, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Checkpoint)
+	err := c.cc.Invoke(ctx, Labcontainers_CreateCheckpoint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *labcontainersClient) RestoreCheckpoint(ctx context.Context, in *CheckpointRequest, opts ...grpc.CallOption) (*Checkpoint, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Checkpoint)
+	err := c.cc.Invoke(ctx, Labcontainers_RestoreCheckpoint_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +223,9 @@ type LabcontainersServer interface {
 	GetSession(context.Context, *SessionRef) (*Session, error)
 	DestroySession(context.Context, *DestroySessionRequest) (*Empty, error)
 	KeepSession(context.Context, *KeepSessionRequest) (*Session, error)
+	ExtendSession(context.Context, *ExtendSessionRequest) (*Session, error)
+	CreateCheckpoint(context.Context, *CheckpointRequest) (*Checkpoint, error)
+	RestoreCheckpoint(context.Context, *CheckpointRequest) (*Checkpoint, error)
 	PlanTopology(context.Context, *PlanTopologyRequest) (*NativeApplyResult, error)
 	ApplyTopology(context.Context, *ApplyTopologyRequest) (*Session, error)
 	Exec(context.Context, *ExecRequest) (*ExecResponse, error)
@@ -216,6 +255,15 @@ func (UnimplementedLabcontainersServer) DestroySession(context.Context, *Destroy
 }
 func (UnimplementedLabcontainersServer) KeepSession(context.Context, *KeepSessionRequest) (*Session, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method KeepSession not implemented")
+}
+func (UnimplementedLabcontainersServer) ExtendSession(context.Context, *ExtendSessionRequest) (*Session, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExtendSession not implemented")
+}
+func (UnimplementedLabcontainersServer) CreateCheckpoint(context.Context, *CheckpointRequest) (*Checkpoint, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateCheckpoint not implemented")
+}
+func (UnimplementedLabcontainersServer) RestoreCheckpoint(context.Context, *CheckpointRequest) (*Checkpoint, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RestoreCheckpoint not implemented")
 }
 func (UnimplementedLabcontainersServer) PlanTopology(context.Context, *PlanTopologyRequest) (*NativeApplyResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PlanTopology not implemented")
@@ -330,6 +378,60 @@ func _Labcontainers_KeepSession_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LabcontainersServer).KeepSession(ctx, req.(*KeepSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Labcontainers_ExtendSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExtendSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabcontainersServer).ExtendSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Labcontainers_ExtendSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabcontainersServer).ExtendSession(ctx, req.(*ExtendSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Labcontainers_CreateCheckpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabcontainersServer).CreateCheckpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Labcontainers_CreateCheckpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabcontainersServer).CreateCheckpoint(ctx, req.(*CheckpointRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Labcontainers_RestoreCheckpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LabcontainersServer).RestoreCheckpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Labcontainers_RestoreCheckpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LabcontainersServer).RestoreCheckpoint(ctx, req.(*CheckpointRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -500,6 +602,18 @@ var Labcontainers_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "KeepSession",
 			Handler:    _Labcontainers_KeepSession_Handler,
+		},
+		{
+			MethodName: "ExtendSession",
+			Handler:    _Labcontainers_ExtendSession_Handler,
+		},
+		{
+			MethodName: "CreateCheckpoint",
+			Handler:    _Labcontainers_CreateCheckpoint_Handler,
+		},
+		{
+			MethodName: "RestoreCheckpoint",
+			Handler:    _Labcontainers_RestoreCheckpoint_Handler,
 		},
 		{
 			MethodName: "PlanTopology",
