@@ -50,6 +50,9 @@ type Backend interface {
 	LinkUp(context.Context, string, string, string, string) (bool, error)
 	Netem(context.Context, string, string, time.Duration, time.Duration, float64, uint64, float64) error
 	ResetNetem(context.Context, string, string) error
+	ExportNode(context.Context, string, string, string) (string, []string, error)
+	ImportNode(context.Context, string, string, string, string, []string) error
+	CopyDisk(context.Context, string, string) error
 }
 
 type Server struct {

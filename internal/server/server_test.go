@@ -463,3 +463,29 @@ func TestReplaceCanSupplyFirstBootDataAfterPoolCreation(t *testing.T) {
 		t.Fatalf("bootstrap bind absent:\n%s", topology)
 	}
 }
+
+func (f *fakeBackend) ExportNode(_ context.Context, _, node, dir string) (string, []string, error) {
+	f.call("export " + node)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", nil, err
+	}
+	return "sha256:image-" + node, []string{"base-overlay.qcow2"}, os.WriteFile(filepath.Join(dir, "base-overlay.qcow2"), []byte("overlay of "+node), 0o600)
+}
+
+func (f *fakeBackend) ImportNode(_ context.Context, _, node, dir, image string, files []string) error {
+	f.call("import " + node + " " + image + " " + strings.Join(files, ","))
+	_, err := os.Stat(filepath.Join(dir, "base-overlay.qcow2"))
+	return err
+}
+
+func (f *fakeBackend) CopyDisk(_ context.Context, source, destination string) error {
+	f.call("copy-disk")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(destination, data, 0o600)
+}

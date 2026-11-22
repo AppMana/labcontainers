@@ -9,6 +9,9 @@ service Labcontainers {
   rpc GetSession(SessionRef) returns (Session);
   rpc DestroySession(DestroySessionRequest) returns (Empty);
   rpc KeepSession(KeepSessionRequest) returns (Session);
+  rpc ExtendSession(ExtendSessionRequest) returns (Session);
+  rpc CreateCheckpoint(CheckpointRequest) returns (Checkpoint);
+  rpc RestoreCheckpoint(CheckpointRequest) returns (Checkpoint);
   rpc PlanTopology(PlanTopologyRequest) returns (NativeApplyResult);
   rpc ApplyTopology(ApplyTopologyRequest) returns (Session);
   rpc Exec(ExecRequest) returns (ExecResponse);
@@ -111,6 +114,40 @@ message DestroySessionRequest {
 message KeepSessionRequest {
   string id = 1;
   int64 ttl_seconds = 2;
+}
+
+// ExtendSessionRequest moves a session's lease without changing who owns its
+// cleanup: an unkept session is still destroyed when its owner closes or dies.
+message ExtendSessionRequest {
+  string id = 1;
+  int64 ttl_seconds = 2;
+}
+
+// CheckpointRequest names a directory outside session state. Creating writes
+// the stopped nodes' disks there; restoring replaces the stopped nodes' disks
+// with that content. Listed nodes must be stopped; an empty list means every
+// node that owns a disk.
+message CheckpointRequest {
+  string session_id = 1;
+  string directory = 2;
+  repeated string nodes = 3;
+  // Free-form identity of what the disks hold (for example a component set).
+  map<string, string> labels = 4;
+}
+
+message Checkpoint {
+  string directory = 1;
+  int64 created_unix = 2;
+  repeated CheckpointNode nodes = 3;
+  map<string, string> labels = 4;
+  uint64 size_bytes = 5;
+}
+
+message CheckpointNode {
+  string name = 1;
+  // Immutable identity of the image the root overlay is based on.
+  string image = 2;
+  repeated string files = 3;
 }
 
 message NodeRef {
